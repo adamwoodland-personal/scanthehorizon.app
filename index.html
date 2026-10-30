@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scan the Horizon: name the hills, towns and islands you can see</title>
+<meta name="description" content="Hold up your phone to see the hills, towns, islands and landmarks on your horizon named, with how far away each is, drawn like the sign at a lookout. Free.">
+<link rel="canonical" href="https://scanthehorizon.app/">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://scanthehorizon.app/">
+<meta property="og:site_name" content="Scan the Horizon">
+<meta property="og:title" content="Scan the Horizon: the hills, towns and islands you can see, named">
+<meta property="og:description" content="Hold up your phone and the view around you is drawn like the sign at a lookout, with every hill, town and island named and how far away it is.">
+<meta property="og:image" content="https://scanthehorizon.app/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The view from the Glass House Mountain Lookout drawn like the lookout's sign: grey ridges, with Mt Ngungun, Caloundra, Mt Cooee, Mt Tibrogargan and other places named in ovals with their distances">
+<meta property="og:locale" content="en_GB">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Scan the Horizon: the hills, towns and islands you can see, named">
+<meta name="twitter:description" content="Hold up your phone and the view around you is drawn like the sign at a lookout, with every hill, town and island named and how far away it is.">
+<meta name="twitter:image" content="https://scanthehorizon.app/og-image.png">
+<meta name="theme-color" content="#f3f1ea" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1b2d" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-title" content="Horizon">
+<link rel="stylesheet" href="xray.css">
+<script type="module" src="app.js"></script>
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "WebSite",
+   "@id": "https://scanthehorizon.app/#website",
+   "name": "Scan the Horizon",
+   "url": "https://scanthehorizon.app/",
+   "inLanguage": "en",
+   "publisher": {
+    "@id": "https://adamwoodland.com/#person"
+   }
+  },
+  {
+   "@type": "WebApplication",
+   "@id": "https://scanthehorizon.app/#app",
+   "name": "Scan the Horizon",
+   "url": "https://scanthehorizon.app/",
+   "description": "A drawing of the hills, mountains and coast around you, made from elevation data and drawn like the sign at a lookout, with the towns, peaks, islands, lakes and landmarks you can see named and how far away each one is. It turns with your phone's compass, works indoors, and can show the drawing over the camera picture.",
+   "applicationCategory": "TravelApplication",
+   "operatingSystem": "Any (a phone with a compass turns the view with you; drag to look around on a computer)",
+   "browserRequirements": "Requires JavaScript",
+   "inLanguage": "en",
+   "isAccessibleForFree": true,
+   "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+   },
+   "image": "https://scanthehorizon.app/og-image.png",
+   "screenshot": "https://scanthehorizon.app/og-image.png",
+   "featureList": [
+    "The hills, mountains and coast around you, drawn like the sign at a lookout",
+    "Towns, cities, peaks, islands, lakes and landmarks named, with how far away each one is",
+    "Works out what can really be seen, allowing for the curve of the Earth and refraction",
+    "Big places hidden behind a hill shown with an arrow over the hill",
+    "Turns with the phone's compass, or drag to look around",
+    "A Detail slider to choose how many names to show, and a List of them all",
+    "An optional camera view with the drawing over the live picture",
+    "Works indoors, and offline for views already opened"
+   ],
+   "isPartOf": {
+    "@id": "https://scanthehorizon.app/#website"
+   },
+   "author": {
+    "@id": "https://adamwoodland.com/#person"
+   }
+  },
+  {
+   "@type": "Person",
+   "@id": "https://adamwoodland.com/#person",
+   "name": "Adam Woodland",
+   "url": "https://adamwoodland.com/"
+  }
+ ]
+}
+</script>
+<!-- Keep FAQPage word for word the same as the Questions in the About sheet (page-test.js checks). -->
+<script type="application/ld+json" id="faqLd">
+{
+ "@context": "https://schema.org",
+ "@type": "FAQPage",
+ "mainEntity": [
+  {
+   "@type": "Question",
+   "name": "What does Scan the Horizon do?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population and a link to Wikipedia; the Detail slider chooses how many names to show."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "How does it know what is on the horizon?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "It downloads elevation data for the land around you, out to 150 km (250 km near high mountains), and works out, bearing by bearing, which hills and ridges stand against the sky. It allows for the curve of the Earth and for refraction, the slight bending of light by the air that lets you see a little further than a straight line would. Each named place is then checked against the ground in front of it: a town behind a hill is left off, and a big one gets an arrow over the hill that hides it."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "Why isn't a hill I can see named, and what about trees and buildings?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "Names come from GeoNames, an open database of places. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "Does it work indoors, or without a compass?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "Yes. The drawing is made from data, not from the camera, so it works indoors and at night. With a compass the drawing turns as you turn; steel and electronics indoors can throw a compass off, so drag the drawing to line it up. Without a compass, on a computer for example, drag to look around and scroll or pinch to zoom."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "How accurate is it?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "A phone compass is good to a few degrees, so line the drawing up with something you can see by dragging it. The elevation data is detailed to a few metres in parts of Australia and Switzerland and to about 30 m elsewhere, so a sharp peak can come out a little low; where a peak's official height is known, it is drawn to that height. Whether something far away just shows over a ridge can change with the weather, because the air bends light more on some days than others."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "What does it send, and where?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "Your exact position stays on your phone. To draw a view it downloads elevation tiles for the area around you from Mapterhorn (or from Amazon Web Services if Mapterhorn doesn't answer) and place names from this site, so those servers can tell roughly where you are and see your IP address. A place you search for is looked up by Photon (komoot) or Open-Meteo. A link you copy carries the place rounded to about 1 km, unless you choose the exact one. There are no cookies or accounts; your settings are kept in this browser only."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "Does it work on iPhone, Android and computers?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "Yes, in Safari, Chrome, Firefox or Edge. On a phone, tap Use my location and allow location and motion when asked, and the drawing turns with you; on an iPhone, hold the phone upright facing the view, or flat, for a moment so the compass can settle. Camera shows the drawing over the live picture. On a computer, drag the drawing to look around and scroll to zoom."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "Does it work offline?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "Partly. Once it has been opened with a connection, the page works without one, and views you have already opened are kept on your phone for a while, so they can be drawn again without signal. Looking from somewhere new needs a connection, for its elevation data and place names, and so does the place search. To keep it handy, add it to your home screen: in Safari tap Share, then Add to Home Screen; in Chrome, choose Install app or Add to Home screen from the menu."
+   }
+  }
+ ]
+}
+</script>
+</head>
+<body>
+<div id="stage">
+	<video id="cam" playsinline muted autoplay aria-hidden="true"></video>
+	<canvas id="view" aria-hidden="true"></canvas>
+	<div id="labels" aria-hidden="true"></div>
+	<div id="centreMark" aria-hidden="true"></div>
+</div>
+
+<header id="hud">
+	<div class="row1">
+		<button id="placeBtn" class="chip place" type="button" aria-haspopup="dialog"><span class="lbl">From</span> <span id="placeName">Choose a place</span> <span id="placeAcc" class="acc" hidden></span></button>
+		<div class="tools">
+			<button id="listBtn" class="tool" type="button" aria-haspopup="dialog" title="Everything named in this view, as a list">List</button>
+			<button id="camBtn" class="tool" type="button" aria-pressed="false" title="Camera view: the drawing over the live picture">Camera</button>
+			<button id="setBtn" class="tool" type="button" aria-haspopup="dialog" title="Settings" aria-label="Settings">⚙</button>
+			<button id="infoBtn" class="tool" type="button" aria-haspopup="dialog" title="About Scan the Horizon, and questions" aria-label="About Scan the Horizon">ⓘ</button>
+		</div>
+	</div>
+	<div class="row2">
+		<p id="aimText">…</p>
+		<button id="nudgeChip" class="chip small" type="button" hidden title="Undo the lining up">Lined up by <span id="nudgeVal">0°</span> <span aria-hidden="true">✕</span><span class="sr">(reset)</span></button>
+		<button id="modeBtn" class="chip small" type="button" hidden>Drag instead</button>
+	</div>
+	<!-- These float under the bar (xray.css), so showing one never moves the drawing. -->
+	<div id="notes">
+		<p id="calib" class="note" hidden></p>
+		<p id="hint" class="note" hidden></p>
+	</div>
+	<div id="progress" hidden><div id="progressBar"></div></div>
+</header>
+
+<div id="bottom">
+	<div id="detailRow">
+		<label for="detail">Detail</label>
+		<span class="end" aria-hidden="true">fewer</span>
+		<input id="detail" type="range" min="0" max="100" step="1" value="50" list="detailStops" aria-valuetext="Normal">
+		<span class="end" aria-hidden="true">more</span>
+		<output id="detailName" for="detail">Normal</output>
+		<!-- How many names there was no room for here (opens the List). It keeps its width when there
+		     are none, so the slider never changes length under a finger. -->
+		<button id="moreBtn" class="chip small idle" type="button" disabled></button>
+		<datalist id="detailStops"><option value="0"></option><option value="25"></option><option value="50"></option><option value="75"></option><option value="100"></option></datalist>
+	</div>
+	<section id="card" aria-label="What's ahead">
+		<!-- The card keeps one height whatever it shows (xray.css), so the drawing above never jumps:
+		     the Wikipedia link shares the kicker's line, and the detail always has two lines. It changes
+		     as the view turns, so it isn't a live region: #cardSr tells screen readers what it names. -->
+		<div class="khead">
+			<p class="kicker" id="cKicker">One moment</p>
+			<a id="cWiki" href="https://en.wikipedia.org/" target="_blank" rel="noopener noreferrer" hidden>More on Wikipedia ›</a>
+		</div>
+		<p class="name"><span id="cName">…</span> <span id="cSub" class="sub"></span></p>
+		<p class="detail" id="cDetail"></p>
+		<div class="actions">
+			<button id="retryBtn" class="plain retry" type="button" hidden>Try again</button>
+		</div>
+	</section>
+</div>
+
+<p id="toast" role="status" aria-live="polite"></p>
+<p id="cardSr" class="sr" aria-live="polite"></p>
+
+<dialog id="intro" class="sheet" aria-labelledby="introTitle">
+	<div class="inner">
+		<h1 id="introTitle">Scan the Horizon</h1>
+		<p class="lead">The hills, mountains, towns and islands around you, named, with how far away they are, drawn like the sign at a lookout. Hold your phone up and the names turn with you.</p>
+		<p id="introHint" class="hint">It works indoors too: the drawing is made from elevation data, as if walls, trees and buildings were glass.</p>
+		<button id="startGps" class="go" type="button" autofocus>Use my location</button>
+		<button id="startLink" class="plain" type="button" hidden>Look from <span id="startLinkName"></span></button>
+		<button id="startSearch" class="plain" type="button">Choose a place</button>
+		<button id="startDemo" class="plain" type="button">Show an example: the Glass House Mountains</button>
+		<p class="small">Your exact position stays on your phone.</p>
+	</div>
+</dialog>
+
+<dialog id="placeSheet" class="sheet" aria-labelledby="placeTitle">
+	<div class="inner">
+		<button class="close" type="button" aria-label="Close">✕</button>
+		<h2 id="placeTitle">Where are you looking from?</h2>
+		<button id="gpsBtn" class="go" type="button">Use my location</button>
+		<p id="gpsNote" class="small" hidden></p>
+		<form id="placeForm" role="search">
+			<label for="placeInput">Or search for a place</label>
+			<div class="srow">
+				<input id="placeInput" type="search" placeholder="Town, peak, lookout or address" autocomplete="off" enterkeyhint="search" maxlength="120">
+				<button type="submit" class="sbtn">Search</button>
+			</div>
+		</form>
+		<p id="placeStatus" class="small" role="status" aria-live="polite"></p>
+		<div id="placeResults" class="results"></div>
+		<p class="small">Searches go to Photon (komoot) and Open-Meteo: only the words you type are sent.</p>
+		<h3>A link to this view</h3>
+		<p class="small">The link carries the place rounded to about 1 km, and the direction you're facing. For a street address it names only the suburb or town.</p>
+		<button id="linkBtn" class="plain" type="button">Copy a link</button>
+		<button id="exactLinkBtn" class="plain" type="button">Copy link with exact position…</button>
+		<div id="exactWarn" class="warn" hidden>
+			<p>This link holds your exact position. Anyone who opens it can see where you are standing.</p>
+			<button id="exactLinkGo" class="plain" type="button">Copy it anyway</button>
+		</div>
+		<p id="linkStatus" class="small" role="status" aria-live="polite"></p>
+	</div>
+</dialog>
+
+<dialog id="listSheet" class="sheet" aria-labelledby="listTitle">
+	<div class="inner">
+		<button class="close" type="button" aria-label="Close">✕</button>
+		<h2 id="listTitle">In this view</h2>
+		<p id="listNote" class="small"></p>
+		<ul id="listItems" class="results plainlist"></ul>
+	</div>
+</dialog>
+
+<dialog id="setSheet" class="sheet" aria-labelledby="setTitle">
+	<div class="inner">
+		<button class="close" type="button" aria-label="Close">✕</button>
+		<h2 id="setTitle">Settings</h2>
+		<label for="setAgl">Your height above the ground</label>
+		<div class="srow">
+			<select id="setAgl">
+				<option value="0">On the ground</option>
+				<option value="3">3 m</option>
+				<option value="6">6 m</option>
+				<option value="10">10 m</option>
+				<option value="20">20 m</option>
+				<option value="50">50 m</option>
+				<option value="100">100 m</option>
+				<option value="300">300 m</option>
+				<option value="floor">On a floor of a building…</option>
+			</select>
+			<input id="setFloor" type="number" min="1" max="200" step="1" value="5" inputmode="numeric" aria-label="Floor number (3 m a floor)" hidden>
+		</div>
+		<p class="small">Up a tower or a few floors up, more of the view clears the ground nearby.</p>
+		<fieldset class="seg">
+			<legend>Height of the hills in the sign view</legend>
+			<label><input type="radio" name="exag" value="1"> True (×1)</label>
+			<label><input type="radio" name="exag" value="2"> ×2</label>
+			<label><input type="radio" name="exag" value="3"> ×3</label>
+			<label><input type="radio" name="exag" value="4"> ×4</label>
+		</fieldset>
+		<label for="setRange">How far to look</label>
+		<select id="setRange">
+			<option value="auto">Automatic</option>
+			<option value="50">50 km</option>
+			<option value="100">100 km</option>
+			<option value="150">150 km</option>
+			<option value="250">250 km</option>
+		</select>
+		<p class="small">Automatic: 150 km, or 250 km near high mountains.</p>
+		<div id="camZoom" hidden>
+			<p class="small">The camera view is zoomed as you pinched it.</p>
+			<button id="camZoomReset" class="plain" type="button">Reset the camera view's zoom</button>
+		</div>
+		<fieldset class="seg">
+			<legend>Colours</legend>
+			<label><input type="radio" name="theme" value="auto"> Automatic</label>
+			<label><input type="radio" name="theme" value="light"> Light</label>
+			<label><input type="radio" name="theme" value="dark"> Dark</label>
+		</fieldset>
+		<label class="check"><input id="setLite" type="checkbox"> Lighter download (less detail close by)</label>
+		<p class="small">Settings are kept in this browser only.</p>
+	</div>
+</dialog>
+
+<dialog id="about" class="sheet" aria-labelledby="aboutTitle">
+	<div class="inner">
+		<button class="close" type="button" aria-label="Close">✕</button>
+		<h2 id="aboutTitle">About Scan the Horizon</h2>
+		<p>Scan the Horizon draws the hills, mountains and coast around you, with the towns, peaks and landmarks named, the way the sign at a lookout does. With a compass the drawing turns as you turn; tap Camera to see it over the live picture.</p>
+		<p>Drawn from elevation data as if trees and buildings were glass: the terrain is the shape of the land, so a place behind a building or a forest still shows. A big place hidden behind a hill gets an arrow over the hill that hides it.</p>
+		<p>Steel and electronics indoors can throw the compass off: drag to line it up. The Detail slider chooses how many names to show.</p>
+		<h3 id="faq">Questions</h3>
+		<!-- Keep these word for word the same as the FAQPage JSON-LD in <head> (page-test.js checks). -->
+		<div class="faq">
+			<h4>What does Scan the Horizon do?</h4>
+			<p>It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population and a link to Wikipedia; the Detail slider chooses how many names to show.</p>
+			<h4>How does it know what is on the horizon?</h4>
+			<p>It downloads elevation data for the land around you, out to 150 km (250 km near high mountains), and works out, bearing by bearing, which hills and ridges stand against the sky. It allows for the curve of the Earth and for refraction, the slight bending of light by the air that lets you see a little further than a straight line would. Each named place is then checked against the ground in front of it: a town behind a hill is left off, and a big one gets an arrow over the hill that hides it.</p>
+			<h4>Why isn't a hill I can see named, and what about trees and buildings?</h4>
+			<p>Names come from GeoNames, an open database of places. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown.</p>
+			<h4>Does it work indoors, or without a compass?</h4>
+			<p>Yes. The drawing is made from data, not from the camera, so it works indoors and at night. With a compass the drawing turns as you turn; steel and electronics indoors can throw a compass off, so drag the drawing to line it up. Without a compass, on a computer for example, drag to look around and scroll or pinch to zoom.</p>
+			<h4>How accurate is it?</h4>
+			<p>A phone compass is good to a few degrees, so line the drawing up with something you can see by dragging it. The elevation data is detailed to a few metres in parts of Australia and Switzerland and to about 30 m elsewhere, so a sharp peak can come out a little low; where a peak's official height is known, it is drawn to that height. Whether something far away just shows over a ridge can change with the weather, because the air bends light more on some days than others.</p>
+			<h4>What does it send, and where?</h4>
+			<p>Your exact position stays on your phone. To draw a view it downloads elevation tiles for the area around you from Mapterhorn (or from Amazon Web Services if Mapterhorn doesn't answer) and place names from this site, so those servers can tell roughly where you are and see your IP address. A place you search for is looked up by Photon (komoot) or Open-Meteo. A link you copy carries the place rounded to about 1 km, unless you choose the exact one. There are no cookies or accounts; your settings are kept in this browser only.</p>
+			<h4>Does it work on iPhone, Android and computers?</h4>
+			<p>Yes, in Safari, Chrome, Firefox or Edge. On a phone, tap Use my location and allow location and motion when asked, and the drawing turns with you; on an iPhone, hold the phone upright facing the view, or flat, for a moment so the compass can settle. Camera shows the drawing over the live picture. On a computer, drag the drawing to look around and scroll to zoom.</p>
+			<h4>Does it work offline?</h4>
+			<p>Partly. Once it has been opened with a connection, the page works without one, and views you have already opened are kept on your phone for a while, so they can be drawn again without signal. Looking from somewhere new needs a connection, for its elevation data and place names, and so does the place search. To keep it handy, add it to your home screen: in Safari tap Share, then Add to Home Screen; in Chrome, choose Install app or Add to Home screen from the menu.</p>
+		</div>
+		<h3>Your privacy</h3>
+		<p>Your exact position stays on your phone. To draw the view, the app downloads elevation tiles for the area around you from Mapterhorn (served by Cloudflare), or from Amazon Web Services when Mapterhorn doesn't answer, and place names for the surrounding area from this site. From the tiles a first look from somewhere asks for, those servers can tell where you are to within about half a kilometre, and they see your IP address. The tiles are then kept on this device for up to 180 days, so looking from nearby again downloads less. Place searches go to Photon (komoot) and Open-Meteo.</p>
+		<h3>Where the data comes from</h3>
+		<p>Terrain: © Mapterhorn (<a href="https://mapterhorn.com/attribution" target="_blank" rel="noopener noreferrer">mapterhorn.com/attribution</a>), from Copernicus GLO-30 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA), Geoscience Australia 5 m LiDAR DEM (© Commonwealth of Australia, CC BY 4.0), swissALTI3D (© swisstopo) and other open national datasets.</p>
+		<p id="awsCredit" hidden>Fallback terrain: Mapzen terrain tiles on AWS Open Data; 3DEP, GMTED2010 and SRTM courtesy of the U.S. Geological Survey; ETOPO1 (NOAA); Australia © Commonwealth of Australia (Geoscience Australia) 2017; EU-DEM (Copernicus).</p>
+		<p>Place names: GeoNames (geonames.org), <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a></p>
+		<p>Place search: Photon (© OpenStreetMap contributors) and Open-Meteo.</p>
+		<h3>How this view was made</h3>
+		<p id="howMade" class="small">Nothing drawn yet.</p>
+		<p class="note">More tools at <a href="https://games.adamwoodland.com/">Adam's Arcade</a> · Made by <a href="https://adamwoodland.com/">Adam Woodland</a><br>Design, code and content developed with the assistance of AI (Anthropic Claude).</p>
+	</div>
+</dialog>
+</body>
+</html>

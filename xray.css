@@ -1,0 +1,260 @@
+/* Scan the Horizon: the drawing fills the screen like the panel of a lookout sign: an off-white board, grey
+   ridges layered darker near and lighter far, names in ovals with thin leaders. A bar on top, the
+   Detail slider and one card at the bottom. Dark is a navy board. In the camera view the board
+   turns into the live picture and the bars become dark glass. */
+/* The text colours are set as --t-* and used as --ink etc., so that the camera view can change
+   --ink etc. for its glass bars while the dialogs keep the theme's own (see body.cam dialog). */
+:root {
+	--panel: #f3f1ea;
+	--t-ink: #23272c;
+	--t-muted: #676d74;
+	--t-line: rgba(35, 39, 44, 0.16);
+	--t-accent: #a8501c;
+	--t-accent-ink: #fff;
+	--ink: var(--t-ink);
+	--muted: var(--t-muted);
+	--line: var(--t-line);
+	--accent: var(--t-accent);
+	--accent-ink: var(--t-accent-ink);
+	--bar: rgba(243, 241, 234, 0.94);
+	--sheet: #fbfaf6;
+	--field: #ffffff;
+	/* the drawing (draw.js reads these) */
+	--band-near: #7f848a;
+	--band-far: #dcdcd5;
+	--ridge: #3a3f45;
+	--skyline: #1d2126;
+	--sea: #5f84a3;
+	--leader: #4b5057;
+	--label-bg: #fffdf7;
+	--label-ink: #1f2328;
+	--label-line: #2f343a;
+	--tick: #50565c;
+	--mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", monospace;
+	--sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+	color-scheme: light;
+}
+/* Dark: a navy board, ridges lighter far (haze), labels light on navy. */
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--panel: #0f1b2d; --t-ink: #e5ecf4; --t-muted: #9babbd; --t-line: rgba(196, 214, 236, 0.18);
+		--t-accent: #ffb04a; --t-accent-ink: #1b1204; --bar: rgba(15, 27, 45, 0.94); --sheet: #132238; --field: #0b1626;
+		--band-near: #060d18; --band-far: #2b3d58; --ridge: #a9bad0; --skyline: #e3ebf5; --sea: #6fa2cf;
+		--leader: #9fb0c6; --label-bg: #172a44; --label-ink: #eef3f9; --label-line: #8ea2bb; --tick: #9fb0c6;
+		color-scheme: dark;
+	}
+}
+:root[data-theme="dark"] {
+	--panel: #0f1b2d; --t-ink: #e5ecf4; --t-muted: #9babbd; --t-line: rgba(196, 214, 236, 0.18);
+	--t-accent: #ffb04a; --t-accent-ink: #1b1204; --bar: rgba(15, 27, 45, 0.94); --sheet: #132238; --field: #0b1626;
+	--band-near: #060d18; --band-far: #2b3d58; --ridge: #a9bad0; --skyline: #e3ebf5; --sea: #6fa2cf;
+	--leader: #9fb0c6; --label-bg: #172a44; --label-ink: #eef3f9; --label-line: #8ea2bb; --tick: #9fb0c6;
+	color-scheme: dark;
+}
+/* The camera view: lines in white over the picture, glass bars. */
+body.cam {
+	--bar: rgba(6, 10, 16, 0.72); --ink: #f1f5f9; --muted: #b8c3cf; --line: rgba(255, 255, 255, 0.22);
+	--ridge: #ffffff; --skyline: #ffffff; --sea: #bfe3ff; --leader: #ffffff; --tick: #ffffff;
+	--label-bg: rgba(10, 14, 20, 0.62); --label-ink: #ffffff; --label-line: rgba(255, 255, 255, 0.75);
+	--accent: #ffb04a; --accent-ink: #1b1204;
+}
+/* The dialogs open over the camera view in the theme's own colours, as anywhere else: the glass
+   bars' light text on a light sheet was unreadable (1.1:1). */
+body.cam dialog {
+	--ink: var(--t-ink); --muted: var(--t-muted); --line: var(--t-line); --accent: var(--t-accent); --accent-ink: var(--t-accent-ink);
+}
+
+* { box-sizing: border-box; }
+/* The hidden attribute always wins, whatever display a class sets. */
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--panel); color: var(--ink); font-family: var(--sans); overflow: hidden; overscroll-behavior: none; }
+body.cam { background: #000; }
+button, select, input, output { font: inherit; color: inherit; }
+a { color: var(--accent); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+#stage { position: fixed; inset: 0; }
+#cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.4s; }
+#cam.on { opacity: 1; }
+#view { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+#view.dragging { cursor: grabbing; }
+#labels { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+/* The names: ovals like the sign's. draw.js sets each one's width, so its box is exactly the one
+   the layout used (the leader is drawn to its bottom edge). */
+.lab {
+	position: absolute; left: 0; top: 0; height: 22px; padding: 0 8px; border-radius: 11px;
+	border: 1px solid var(--label-line); background: var(--label-bg); color: var(--label-ink);
+	font: 600 12.5px/20px var(--sans); white-space: nowrap; text-align: center; overflow: hidden; text-overflow: ellipsis;
+	pointer-events: auto; cursor: pointer; will-change: transform; user-select: none; -webkit-user-select: none;
+}
+.lab .h { font-weight: 500; color: var(--muted); }
+body.cam .lab .h { color: #d5dde6; }
+.lab.marg { border-style: dashed; }
+.lab.behind { border-color: var(--accent); border-width: 1.5px; color: var(--accent); }
+body.cam .lab.behind { color: #ffd59a; }
+.lab.behind .h { color: var(--accent); opacity: 0.85; }
+body.cam .lab.behind .h { color: #ffd59a; }
+.lab.sel { background: var(--label-ink); color: var(--label-bg); border-color: var(--label-ink); }
+.lab.sel .h { color: var(--label-bg); opacity: 0.8; }
+.lab.behind.sel { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+#centreMark {
+	position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%;
+	border: 2px solid rgba(255, 255, 255, 0.9); box-shadow: 0 0 6px rgba(0, 0, 0, 0.6); pointer-events: none; display: none;
+}
+body.cam #centreMark { display: block; }
+
+/* ---- Top bar ---- */
+#hud {
+	position: fixed; left: 0; right: 0; top: 0; z-index: 5;
+	padding: calc(env(safe-area-inset-top) + 8px) 12px 6px;
+	background: var(--bar); border-bottom: 1px solid var(--line);
+	backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+#hud .row1 { display: flex; align-items: center; gap: 8px; min-width: 0; position: relative; z-index: 1; } /* above row 2, so the buttons' enlarged tap areas reach over its top edge */
+#hud .tools { display: flex; gap: 6px; margin-left: auto; flex: none; }
+#hud .row2 { display: flex; align-items: center; gap: 8px; height: 28px; margin-top: 4px; min-width: 0; } /* one height, chips or not: the bar's height sets where the drawing starts */
+#aimText { margin: 0; min-width: 0; flex: 1 1 auto; font-family: var(--mono); font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.note { margin: 6px 0 0; padding: 5px 10px; border-radius: 8px; font-size: 13px; line-height: 1.35; background: rgba(168, 80, 28, 0.1); border: 1px solid rgba(168, 80, 28, 0.35); }
+body.cam .note { background: rgba(255, 176, 74, 0.16); border-color: rgba(255, 176, 74, 0.5); }
+/* The notes float just under the bar, over the empty sky, rather than growing it: the bar's height
+   sets where the drawing starts, so a note coming and going would make the whole drawing jump.
+   The label layout keeps clear of them instead (G.labelTop in app.js). Opaque, being over the drawing. */
+#notes { position: absolute; left: 12px; right: 12px; top: calc(100% + 6px); display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+#notes .note { margin: 0; background: linear-gradient(rgba(168, 80, 28, 0.1), rgba(168, 80, 28, 0.1)), var(--field); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); }
+body.cam #notes .note { background: rgba(10, 14, 20, 0.78); }
+.chip, .tool {
+	position: relative; border: 1px solid var(--line); background: var(--field); border-radius: 999px; padding: 6px 12px; cursor: pointer;
+	font-size: 14px; max-width: 100%; white-space: nowrap; min-height: 34px;
+}
+/* Each pill takes taps from a little beyond its edge (5 px above and below, 3 px either side: the
+   inset counts from inside the 1 px border), so the targets are bigger without the bars getting
+   taller or the pills wider. */
+.chip::after, .tool::after { content: ""; position: absolute; inset: -6px -4px; }
+body.cam .chip, body.cam .tool { background: rgba(10, 14, 20, 0.55); }
+body.cam .tool[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+/* Only the place's name is cut short, so the GPS accuracy after it always shows. */
+.chip.place { display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; text-align: left; }
+#placeName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .lbl { flex: none; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.chip .acc { flex: none; color: var(--muted); font-size: 12px; }
+.chip.place.approx { border-color: var(--accent); }
+.chip.place.approx .acc { color: var(--accent); font-weight: 600; }
+.chip.small { flex: none; font-size: 13px; padding: 3px 11px; min-height: 28px; }
+.tool { padding: 6px 11px; font-size: 13px; font-weight: 600; }
+.tool[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.tool:disabled { opacity: 0.5; cursor: progress; }
+#progress { position: absolute; left: 0; right: 0; bottom: -2px; height: 3px; background: transparent; overflow: hidden; } /* on the bar's lower edge, so it never changes the bar's height */
+#progressBar { height: 100%; width: 0; background: var(--accent); transition: width 0.25s; }
+
+/* ---- Bottom: the Detail slider and the card ---- */
+#bottom {
+	position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+	padding: 6px 12px calc(env(safe-area-inset-bottom) + 10px);
+	background: var(--bar); border-top: 1px solid var(--line);
+	backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+#detailRow { display: flex; align-items: center; gap: 8px; max-width: 560px; margin: 0 auto; font-size: 13px; }
+#detailRow label { font-weight: 650; }
+#detailRow .end { color: var(--muted); font-size: 12px; }
+#detail { flex: 1 1 auto; min-width: 60px; accent-color: var(--accent); margin: -6px 0; height: 40px; } /* 40 px to touch, 28 px of the row's height */
+/* "+12 more": one width whether it shows or not, so the slider never changes length under a finger. */
+#moreBtn { flex: none; width: 5.8em; padding: 3px 0; font-size: 12px; text-align: center; color: var(--muted); }
+#moreBtn.idle { visibility: hidden; }
+#detailName { min-width: 4.2em; text-align: right; font-weight: 600; font-size: 13px; }
+#card { max-width: 560px; margin: 6px auto 0; padding: 8px 12px; border-radius: 12px; background: var(--field); border: 1px solid var(--line); min-height: 72px; }
+body.cam #card { background: rgba(10, 14, 20, 0.6); }
+#card p { margin: 0; }
+#card .kicker { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.09em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#card .name { margin-top: 1px; font-size: 20px; font-weight: 700; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#card .sub { font-size: 14px; font-weight: 500; color: var(--muted); }
+/* One height whatever the card shows (the bottom bar's height sets where the drawing ends, so a
+   growing card made the drawing jump): the kicker line is always as tall as the Wikipedia link, and
+   the detail always takes two lines, cut off with an ellipsis if longer (the List has it all). */
+#card .khead { display: flex; align-items: center; gap: 10px; min-width: 0; height: 18px; }
+#card .khead .kicker { flex: 1 1 auto; min-width: 0; }
+#card .detail { margin-top: 2px; font-size: 13px; color: var(--ink); line-height: 1.35; height: 2.7em; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+#card .actions { display: flex; gap: 12px; align-items: center; }
+#cWiki { flex: none; font-size: 13px; line-height: 18px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+#card .retry { width: auto; margin-top: 6px; padding: 6px 16px; border-color: var(--accent); }
+
+/* ---- Toast ---- */
+#toast {
+	position: fixed; z-index: 6; left: 50%; transform: translate(-50%, -8px); top: calc(env(safe-area-inset-top) + 96px);
+	max-width: min(92vw, 520px); margin: 0; padding: 8px 14px; border-radius: 12px;
+	background: rgba(24, 28, 34, 0.94); color: #f4f6f8; font-size: 14px; text-align: center; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+	opacity: 0; transition: opacity 0.3s, transform 0.3s; pointer-events: none;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---- Sheets: native modal dialogs (focus moves in and stays in; Escape closes) ---- */
+dialog.sheet { padding: 0; border: 0; margin: auto; background: transparent; color: var(--ink); width: min(100% - 24px, 540px); max-width: none; max-height: calc(100dvh - 24px); overflow: visible; }
+dialog.sheet::backdrop { background: rgba(15, 20, 26, 0.55); }
+.sheet .inner {
+	position: relative; width: 100%; max-height: calc(100dvh - 24px); overflow: auto; padding: 20px 18px;
+	background: var(--sheet); color: var(--ink); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 16px 50px rgba(0, 0, 0, 0.3);
+}
+.sheet h1 { margin: 0 0 6px; font-size: 32px; letter-spacing: 0.02em; }
+.sheet h2 { margin: 0 44px 12px 0; font-size: 20px; }
+.sheet h3 { margin: 18px 0 4px; font-size: 15px; }
+.sheet p { line-height: 1.5; margin: 8px 0; }
+.sheet .lead { font-size: 17px; }
+.sheet .hint { color: var(--muted); font-size: 14px; }
+.sheet .small, .sheet .note-s { color: var(--muted); font-size: 13px; }
+.sheet .note { color: inherit; }
+/* The questions in About (the FAQPage JSON-LD in index.html says the same, word for word). */
+.sheet h4 { margin: 14px 0 2px; font-size: 14.5px; color: var(--accent); }
+.faq p { margin-top: 0; }
+.sheet .close { position: absolute; top: 6px; right: 6px; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: transparent; cursor: pointer; }
+.sheet label { display: block; margin: 16px 0 6px; color: var(--muted); font-size: 13px; }
+.sheet input[type="search"], .sheet select, .sheet input[type="number"] {
+	width: 100%; min-width: 0; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--field); font-size: 16px;
+}
+.sheet input[type="number"] { width: 7em; flex: none; }
+.sheet input:focus-visible, .sheet select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.srow { display: flex; gap: 8px; }
+.sbtn { flex: none; padding: 0 16px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 650; }
+.results { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.plainlist { list-style: none; padding: 0; }
+.res { display: block; width: 100%; text-align: left; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--field); cursor: pointer; }
+.res:hover, .res:focus-visible { border-color: var(--accent); }
+.res .rn { display: block; font-weight: 650; }
+.res .rw { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+.res .rb { float: right; margin-left: 10px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.res.behind .rn { color: var(--accent); }
+.go { display: block; width: 100%; margin: 14px 0 8px; padding: 13px; border-radius: 12px; cursor: pointer; font-weight: 700; font-size: 17px;
+	border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+.plain { display: block; width: 100%; margin: 6px 0; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--field); cursor: pointer; }
+.warn { margin: 6px 0; padding: 4px 12px; border-radius: 10px; border: 1px solid var(--accent); }
+.seg { margin: 16px 0 0; padding: 0; border: 0; }
+.seg legend { padding: 0; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
+.seg label { display: inline-flex; align-items: center; gap: 6px; margin: 0 14px 0 0; color: var(--ink); font-size: 15px; }
+.sheet label.check { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 15px; margin-top: 18px; }
+input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); width: 18px; height: 18px; }
+
+/* Short screens (a phone on its side): a slimmer bottom. */
+@media (max-height: 480px) {
+	#hud { padding-top: calc(env(safe-area-inset-top) + 4px); padding-bottom: 4px; }
+	#hud .row2 { margin-top: 2px; height: 26px; }
+	.chip.small { min-height: 26px; padding-top: 2px; padding-bottom: 2px; }
+	#bottom { display: flex; gap: 10px; align-items: center; padding-top: 4px; padding-bottom: calc(env(safe-area-inset-bottom) + 4px); }
+	#detailRow { flex: 0 1 350px; margin: 0; }
+	#detailRow .end { display: none; }
+	#card { flex: 1 1 auto; margin: 0; min-height: 0; padding: 4px 10px; }
+	#card .name { font-size: 16px; }
+	#card .detail { font-size: 12px; height: 1.35em; -webkit-line-clamp: 1; line-clamp: 1; }
+	.tool { padding: 4px 9px; min-height: 30px; }
+	.chip { min-height: 30px; padding: 4px 10px; }
+}
+@media (max-width: 480px) {
+	#detailRow .end { display: none; }
+}
+@media (max-width: 400px) {
+	.chip.place .lbl { display: none; }
+}
+@media (max-width: 380px) {
+	.tool { padding: 6px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#toast, #cam, #progressBar { transition: none; }
+}
