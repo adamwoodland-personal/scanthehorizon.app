@@ -310,28 +310,49 @@ const canvas = $('view'), ctx = canvas.getContext('2d');
 let G = null, dpr = 1;
 const portrait = () => innerHeight >= innerWidth;
 const defaultWidth = () => (portrait() ? 60 : 100);
+// The geometry is in #stage's own coordinates, where the canvas and the labels live, and comes from
+// sizes only: the stage's box, the top bar's height (it is pinned to the stage's top) and the
+// bottom bar's (pinned to its bottom). Not from innerHeight or the bars' positions: while an iPhone
+// turns, Safari can report those from the old orientation and fire only one resize, and a bottom
+// bar measured where it sat in portrait put the horizon below the screen in landscape (2026-11-03).
+const stageEl = $('stage');
 function resize() {
-	dpr = Math.min(devicePixelRatio || 1, 2.5);
-	const W = innerWidth, H = innerHeight;
+	const s = stageEl.getBoundingClientRect(), W = s.width || innerWidth, H = s.height || innerHeight;
+	const top = $('hud').getBoundingClientRect().height, ticksH = 24, ticksTop = H - $('bottom').getBoundingClientRect().height - ticksH;
+	const d = Math.min(devicePixelRatio || 1, 2.5);
+	if (G && G.W === W && G.H === H && G.top === top && G.ticksTop === ticksTop && d === dpr) return;
+	dpr = d;
 	canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
-	const hud = $('hud').getBoundingClientRect(), bot = $('bottom').getBoundingClientRect(), ticksH = 24;
-	G = { W, H, left: 0, right: W, w: W, top: hud.bottom, bottom: bot.top - ticksH, ticksTop: bot.top - ticksH, ticksH };
+	G = { W, H, left: 0, right: W, w: W, top, bottom: ticksTop, ticksTop, ticksH };
 	G.h = G.bottom - G.top;
 	S.hy = null; S.ex = null;
 	notesTop();
 	S.dirty = true;
 }
 // The notes float under the bar (xray.css), so they never move the drawing; labels just keep
-// clear of them: G.labelTop is the highest a label may sit.
+// clear of them: G.labelTop is the highest a label may sit. (Measured from the bar's top, as the
+// notes hang from the bar.)
 function notesTop() {
 	if (!G) return;
 	const n = $('notes').getBoundingClientRect();
-	G.labelTop = n.height > 0 ? Math.max(G.top, n.bottom) : G.top;
+	G.labelTop = n.height > 0 ? Math.max(G.top, n.bottom - $('hud').getBoundingClientRect().top) : G.top;
 	S.dirty = true;
 }
-addEventListener('resize', resize);
-new ResizeObserver(() => resize()).observe($('hud'));
-new ResizeObserver(() => resize()).observe($('bottom'));
+// The turn itself takes about half a second on an iPhone, and the sizes can settle after the last
+// event, so after anything that may be one, measure now, at the next frame and over the next second
+// (resize does nothing when nothing changed).
+let resizeTimers = [];
+function scheduleResize() {
+	resize();
+	requestAnimationFrame(resize);
+	for (const t of resizeTimers) clearTimeout(t);
+	resizeTimers = [100, 250, 500, 1000].map((ms) => setTimeout(resize, ms));
+}
+addEventListener('resize', scheduleResize);
+addEventListener('orientationchange', scheduleResize);
+if (window.visualViewport) visualViewport.addEventListener('resize', scheduleResize);
+if (screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener('change', scheduleResize);
+for (const id of ['stage', 'hud', 'bottom']) new ResizeObserver(() => resize()).observe($(id));
 new ResizeObserver(notesTop).observe($('notes'));
 const signWidth = () => S.widthDeg || defaultWidth();
 // The camera view's vertical field of view, worked out from the video (or, with no picture, the
