@@ -15,7 +15,7 @@
 //    The place search needs a connection anyway.
 //  - On activate, only this site's older caches (names starting 'sth-') are deleted.
 //  - Bump CACHE on every deploy that changes a precached file.
-const CACHE = 'sth-v2';
+const CACHE = 'sth-v3';
 const PLACES = 'sth-places-v1';
 const PLACES_MAX = 300;
 const CORE = [

@@ -537,7 +537,9 @@ export class Engine {
 			const fatal = (e) => signal.aborted || !!(e && (e.sayable || e.name === 'QuotaExceededError'));
 			let mtOk = 0, mtFail = 0;
 			const terrain = async (t) => {
-				try { bytes += (await keep(t.url, { deadline: this.deadlines.tile, init: TILE_INIT, peek: true, allow404: true })).bytes; mtOk++; }
+				// (the size is added after the await: `bytes += await …` reads bytes first, and the four
+				// downloads at a time would overwrite each other's totals)
+				try { const r = await keep(t.url, { deadline: this.deadlines.tile, init: TILE_INIT, peek: true, allow404: true }); bytes += r.bytes; mtOk++; }
 				catch (err) {
 					if (fatal(err)) throw err;
 					if (++mtFail >= SAVE_GIVE_UP && !mtOk) throw sayable('The elevation data isn’t answering just now. Try again later.');
@@ -552,7 +554,7 @@ export class Engine {
 				}
 			};
 			const place = async (u) => {
-				try { bytes += (await keep(u, { deadline: this.deadlines.places, init: {} })).bytes; }
+				try { const r = await keep(u, { deadline: this.deadlines.places, init: {} }); bytes += r.bytes; }
 				catch (err) { if (fatal(err)) throw err; missing++; }
 			};
 			const jobs = [...tiles.map((t) => () => terrain(t)), ...[...places, ...index].map((u) => () => place(u))];
