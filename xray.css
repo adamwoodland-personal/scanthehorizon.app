@@ -225,6 +225,15 @@ dialog.sheet::backdrop { background: rgba(15, 20, 26, 0.55); }
 	border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
 .plain { display: block; width: 100%; margin: 6px 0; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--field); cursor: pointer; }
 .warn { margin: 6px 0; padding: 4px 12px; border-radius: 10px; border: 1px solid var(--accent); }
+/* Saved areas (the place sheet): progress with Stop, and each area with its Finish / Delete buttons. */
+.sbtn:disabled { opacity: 0.5; cursor: default; }
+.saveprog { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.saveprog progress { flex: 1; min-width: 0; height: 10px; accent-color: var(--accent); }
+.saveprog .plain { width: auto; flex: none; margin: 0; padding: 6px 16px; }
+.area { display: flex; gap: 6px; }
+.area .res { flex: 1; min-width: 0; }
+.area .side { flex: none; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--field); cursor: pointer; font-size: 14px; }
+.area .side.armed { border-color: var(--accent); color: var(--accent); font-weight: 650; }
 .seg { margin: 16px 0 0; padding: 0; border: 0; }
 .seg legend { padding: 0; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
 .seg label { display: inline-flex; align-items: center; gap: 6px; margin: 0 14px 0 0; color: var(--ink); font-size: 15px; }

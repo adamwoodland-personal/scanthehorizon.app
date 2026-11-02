@@ -409,10 +409,13 @@ export async function fetchWithDeadline(fetchFn, url, { signal = null, headMs = 
 // the cache but in no index, where eviction never found them. Each write merges with the index as
 // stored (another tab or worker may have written it) and with the cache's own list of keys, so a tile
 // in no index is adopted as the least recently used, and the 400-tile limit holds.
+// pinned: the saved areas (saved.js SavedStore, or anything with match(url) → Response|null), looked
+// up before this cache: a saved tile never expires and is never evicted from here, and offline it may
+// be all there is.
 const INDEX_KEY = 'https://xray.invalid/dem-index';
 export class TileFetcher {
-	constructor({ fetch, caches = null, cacheName = 'xray-dem-v1', maxEntries = 400, maxAgeDays = 180, deadline = DEADLINES.tile, flushEvery = 10, flushAfterMs = 2000 } = {}) {
-		this.fetch = fetch; this.caches = caches; this.name = cacheName;
+	constructor({ fetch, caches = null, cacheName = 'xray-dem-v1', maxEntries = 400, maxAgeDays = 180, deadline = DEADLINES.tile, flushEvery = 10, flushAfterMs = 2000, pinned = null } = {}) {
+		this.fetch = fetch; this.caches = caches; this.name = cacheName; this.pinned = pinned;
 		this.maxEntries = maxEntries; this.maxAge = maxAgeDays * 864e5;
 		this.deadline = deadline; this.flushEvery = flushEvery; this.flushAfterMs = flushAfterMs;
 		this.cacheP = null; this.idx = new Map(); this.dirty = false;
@@ -447,18 +450,15 @@ export class TileFetcher {
 	// → { status: 200|404, blob, bytes, cached }. Throws on a network error, a stall (TimeoutError),
 	// a cancel (AbortError) or any other status.
 	async get(url, signal) {
-		const c = await this.cache();
-		if (c) {
+		if (this.pinned) {
 			try {
-				const hit = await c.match(url);
-				const stored = hit && +hit.headers.get('x-xray-stored');
-				if (hit && Date.now() - stored < this.maxAge) {
-					const blob = await hit.blob();
-					this.touch(url);
-					return { status: hit.status, blob, bytes: blob.size, cached: true };
-				}
-			} catch (e) { /* fall through to the network */ }
+				const hit = await this.pinned.match(url);
+				if (hit) { const blob = await hit.blob(); return { status: hit.status, blob, bytes: blob.size, cached: true }; }
+			} catch (e) { /* this cache, then the network */ }
 		}
+		const hit = await this.peek(url);
+		if (hit) { this.touch(url); return { status: hit.status, blob: hit.blob, bytes: hit.blob.size, cached: true }; }
+		const c = await this.cache();
 		// The cache lookup takes no signal: a run cancelled meanwhile doesn't start a download.
 		if (signal && signal.aborted) throw abortError();
 		const r = await fetchWithDeadline(this.fetch, url, { signal, ...this.deadline, init: { mode: 'cors', credentials: 'omit' } });
@@ -471,6 +471,18 @@ export class TileFetcher {
 			} catch (e) { /* storage full or refused: carry on */ }
 		}
 		return { status: r.status, blob, bytes: blob.size, cached: false };
+	}
+	// A copy from this cache that hasn't expired, without the network → { status, ok, type, blob } or
+	// null. (Saving an area takes tiles from here rather than download them again.)
+	async peek(url) {
+		const c = await this.cache();
+		if (!c) return null;
+		try {
+			const hit = await c.match(url);
+			const stored = hit && +hit.headers.get('x-xray-stored');
+			if (hit && Date.now() - stored < this.maxAge) return { status: hit.status, ok: hit.ok, type: hit.headers.get('content-type') || '', blob: await hit.blob() };
+		} catch (e) { /* not there */ }
+		return null;
 	}
 	touch(url) {
 		this.idx.set(url, Date.now()); this.dirty = true;

@@ -176,6 +176,12 @@ function indexBits(base, fetchFn, deadline) {
 	return idxCache.get(base);
 }
 export const hasCell = (bits, fLat, fLon) => { const i = (fLat + 90) * 360 + (fLon + 180); return ((bits[i >> 3] >> (i & 7)) & 1) === 1; };
+// The URLs of the tiles that exist for the disc (for saving an area: saved.js). Throws if the index
+// can't be had.
+export async function placeTileUrls({ base, lat, lon, rangeKm, fetch: fetchFn, deadline = DEADLINES.places }) {
+	const bits = await indexBits(base, fetchFn, deadline);
+	return placeCells(lat, lon, rangeKm).filter((c) => hasCell(bits, c.lat, c.lon)).map((c) => new URL(`${c.lat}/${c.lon}.json`, base).href);
+}
 
 // Read the tiles for the disc. base: the URL of data/places/v1/; signal: the run's (a cancel stops
 // it with an AbortError). One failed tile out of a dozen or more used to remove every name; now the

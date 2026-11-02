@@ -70,7 +70,7 @@
     "Turns with the phone's compass, or drag to look around",
     "A Detail slider to choose how many names to show, and a List of them all",
     "An optional camera view with the drawing over the live picture",
-    "Works indoors, and offline for views already opened"
+    "Works indoors, and offline for views already opened and for areas saved ahead"
    ],
    "isPartOf": {
     "@id": "https://scanthehorizon.app/#website"
@@ -155,7 +155,7 @@
    "name": "Does it work offline?",
    "acceptedAnswer": {
     "@type": "Answer",
-    "text": "Partly. Once it has been opened with a connection, the page works without one, and views you have already opened are kept on your phone for a while, so they can be drawn again without signal. Looking from somewhere new needs a connection, for its elevation data and place names, and so does the place search. To keep it handy, add it to your home screen: in Safari tap Share, then Add to Home Screen; in Chrome, choose Install app or Add to Home screen from the menu."
+    "text": "Yes, once it has been opened with a connection. Views you have already opened are kept on your phone for a while, so they can be drawn again without signal. To use it somewhere with no signal, save the area before you go: tap the place name at the top, choose the place, then Save this area. Everything needed for looking from anywhere within a few kilometres of it stays on your phone until you delete it. Looking from anywhere else needs a connection, for its elevation data and place names, and so does the place search. To keep it handy, add it to your home screen: in Safari tap Share, then Add to Home Screen; in Chrome, choose Install app or Add to Home screen from the menu."
    }
   }
  ]
@@ -253,6 +253,27 @@
 		<p id="placeStatus" class="small" role="status" aria-live="polite"></p>
 		<div id="placeResults" class="results"></div>
 		<p class="small">Searches go to Photon (komoot) and Open-Meteo: only the words you type are sent.</p>
+		<h3>Use it without signal</h3>
+		<p class="small">Save the elevation data and place names for looking from anywhere near the place on screen. They stay on this phone until you delete them.</p>
+		<label for="saveRadius">Area to save</label>
+		<div class="srow">
+			<select id="saveRadius">
+				<option value="2">Within 2 km</option>
+				<option value="5">Within 5 km</option>
+				<option value="10">Within 10 km</option>
+				<option value="20">Within 20 km</option>
+			</select>
+			<button id="saveBtn" class="sbtn" type="button">Save this area</button>
+		</div>
+		<p id="saveEst" class="small"></p>
+		<div id="saveProg" class="saveprog" hidden>
+			<progress id="saveBar" max="1" value="0" aria-label="Saving the area"></progress>
+			<button id="saveStop" class="plain" type="button">Stop</button>
+		</div>
+		<p id="saveText" class="small" hidden></p>
+		<p id="saveStatus" class="small" role="status" aria-live="polite"></p>
+		<ul id="savedList" class="plainlist results" aria-label="Saved areas" hidden></ul>
+		<p id="savedIos" class="small" hidden>On an iPhone or iPad, add Scan the Horizon to your Home Screen to keep saved areas safe: Safari can clear a website's saved data after a week without a visit.</p>
 		<h3>A link to this view</h3>
 		<p class="small">The link carries the place rounded to about 1 km, and the direction you're facing. For a street address it names only the suburb or town.</p>
 		<button id="linkBtn" class="plain" type="button">Copy a link</button>
@@ -350,7 +371,7 @@
 			<h4>Does it work on iPhone, Android and computers?</h4>
 			<p>Yes, in Safari, Chrome, Firefox or Edge. On a phone, tap Use my location and allow location and motion when asked, and the drawing turns with you; on an iPhone, hold the phone upright facing the view, or flat, for a moment so the compass can settle. Camera shows the drawing over the live picture. On a computer, drag the drawing to look around and scroll to zoom.</p>
 			<h4>Does it work offline?</h4>
-			<p>Partly. Once it has been opened with a connection, the page works without one, and views you have already opened are kept on your phone for a while, so they can be drawn again without signal. Looking from somewhere new needs a connection, for its elevation data and place names, and so does the place search. To keep it handy, add it to your home screen: in Safari tap Share, then Add to Home Screen; in Chrome, choose Install app or Add to Home screen from the menu.</p>
+			<p>Yes, once it has been opened with a connection. Views you have already opened are kept on your phone for a while, so they can be drawn again without signal. To use it somewhere with no signal, save the area before you go: tap the place name at the top, choose the place, then Save this area. Everything needed for looking from anywhere within a few kilometres of it stays on your phone until you delete it. Looking from anywhere else needs a connection, for its elevation data and place names, and so does the place search. To keep it handy, add it to your home screen: in Safari tap Share, then Add to Home Screen; in Chrome, choose Install app or Add to Home screen from the menu.</p>
 		</div>
 		<h3>Your privacy</h3>
 		<p>Your exact position stays on your phone. To draw the view, the app downloads elevation tiles for the area around you from Mapterhorn (served by Cloudflare), or from Amazon Web Services when Mapterhorn doesn't answer, and place names for the surrounding area from this site. From the tiles a first look from somewhere asks for, those servers can tell where you are to within about half a kilometre, and they see your IP address. The tiles are then kept on this device for up to 180 days, so looking from nearby again downloads less. Place searches go to Photon (komoot) and Open-Meteo.</p>

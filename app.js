@@ -2,7 +2,8 @@
 // lookout. A module worker (xray-worker.js, SPEC §5) downloads the terrain and place names for
 // the place you look from and works out the skyline, the ridge lines and which named places can
 // be seen; this page draws them (draw.js) and handles everything else: the place (GPS, a search,
-// a #at= link), the compass, the camera, the Detail slider, the card and the sheets.
+// a #at= link), the compass, the camera, the Detail slider, the card, the sheets and the saved areas
+// (saved.js: the worker keeps them, this page lists, saves and deletes them).
 //
 // Two views of one panorama (SPEC §7). The sign view, the default, is a strip like the sign:
 // bearing across, altitude up (exaggerated ×3 by default); it needs no sensors, and with a live
@@ -52,7 +53,8 @@ const DEMO = { name: 'Glass House Mountains Lookout', lat: -26.93153, lon: 152.8
 // stays right whichever way the phone is turned.
 const PREFS = 'xray-prefs-v2', OLD_PREFS = 'xray-prefs-v1';
 const AGLS = [0, 3, 6, 10, 20, 50, 100, 300], EXAGS = [1, 2, 3, 4], EXAG = 3;
-const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, detail: 50, camLong: null, place: null };
+const SAVE_KMS = [2, 5, 10, 20];
+const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, detail: 50, camLong: null, place: null, saveKm: 5 };
 const readStored = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } };
 function loadPrefs() {
 	const p = { ...DEFAULTS };
@@ -68,6 +70,7 @@ function loadPrefs() {
 	if (typeof raw.lite === 'boolean') p.lite = raw.lite;
 	if (Number.isInteger(raw.detail) && raw.detail >= 0 && raw.detail <= 100) p.detail = raw.detail;
 	if (!old && typeof raw.camLong === 'number' && raw.camLong >= 20 && raw.camLong <= 120) p.camLong = raw.camLong;
+	if (SAVE_KMS.includes(raw.saveKm)) p.saveKm = raw.saveKm;
 	const pl = raw.place;
 	if (pl && typeof pl === 'object' && typeof pl.name === 'string' && Number.isFinite(pl.lat) && Number.isFinite(pl.lon) && Math.abs(pl.lat) <= 90 && Math.abs(pl.lon) <= 180) {
 		p.place = { name: pl.name.slice(0, 60), lat: pl.lat, lon: pl.lon, source: 'stored' };
@@ -204,6 +207,7 @@ function checkStall(now = performance.now()) {
 function onWorker(m) {
 	if (!m || typeof m !== 'object') return;
 	if (m.type === 'decode') return; // decode.js answers these
+	if (SAVED_MSGS.has(m.type)) return onSaved(m); // saved areas: not part of a view, no gen
 	if (m.gen !== S.gen) return;
 	S.heardAt = performance.now();
 	if (S.stalled) { S.stalled = false; cardUi(); }
@@ -265,6 +269,7 @@ function onWorker(m) {
 	case 'stats':
 		S.stats = m;
 		aboutUi();
+		if ($('placeSheet').open) askEstimate(); // a closer estimate now the view's tiles are in
 		break;
 	}
 }
@@ -758,6 +763,7 @@ document.addEventListener('visibilitychange', () => {
 let lastFocus = null;
 function openSheet(el) {
 	if (!lastFocus || !document.querySelector('dialog[open]')) lastFocus = document.activeElement;
+	if (el.id === 'placeSheet') savedOpen();
 	if (!el.open) el.showModal();
 }
 function closeSheet(el) { if (el.open) el.close(); }
@@ -779,6 +785,7 @@ for (const sh of document.querySelectorAll('dialog.sheet')) {
 $('intro').addEventListener('cancel', (e) => e.preventDefault());
 $('infoBtn').addEventListener('click', () => { aboutUi(); openSheet($('about')); });
 $('placeBtn').addEventListener('click', () => { placeUi(); openSheet($('placeSheet')); });
+$('placeSheet').addEventListener('close', () => { disarm(); });
 $('setBtn').addEventListener('click', () => { settingsUi(); openSheet($('setSheet')); });
 $('listBtn').addEventListener('click', () => { listUi(); openSheet($('listSheet')); });
 $('moreBtn').addEventListener('click', () => { listUi(); openSheet($('listSheet')); });
@@ -888,6 +895,134 @@ for (const r of document.querySelectorAll('input[name="exag"]')) r.addEventListe
 for (const r of document.querySelectorAll('input[name="theme"]')) r.addEventListener('change', () => setSetting('theme', r.value));
 $('setRange').addEventListener('change', (e) => setSetting('range', e.target.value === 'auto' ? 'auto' : +e.target.value));
 $('setLite').addEventListener('change', (e) => setSetting('lite', e.target.checked));
+
+// ---- Saved areas: "Use it without signal" in the place sheet -------------------------------------------
+// The worker downloads, keeps and deletes them (saved.js); this page shows the list, an estimate of
+// the download for the place on screen, the progress with Stop, and Finish and Delete (two taps).
+// Their messages carry no generation number, as they aren't part of a view. Saving asks the browser
+// to keep the site's storage (navigator.storage.persist(); Firefox asks the visitor), inside the tap.
+const SAVED_MSGS = new Set(['areas', 'estimate', 'saveProgress', 'saved']);
+const IOS_DEVICE = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const SV = { areas: null, saving: null, prog: null, est: null, estFor: '', armed: null, armTimer: 0, drawn: '' };
+const mbText = (b) => `${(b / 1048576).toFixed(b < 9.95 * 1048576 ? 1 : 0)} MB`;
+function toWorker(msg) { if (!worker) makeWorker(); if (worker) worker.postMessage(msg); return !!worker; }
+// A searched address is named by its suburb or town, as in links; a GPS fix by the day.
+function areaName(p) {
+	if (p.source === 'gps') return `Your location on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+	return p.address ? (p.locality || 'A searched address') : p.name;
+}
+const radiusNow = () => +$('saveRadius').value || prefs.saveKm;
+const estKey = () => (S.place ? `${S.place.lat.toFixed(5)},${S.place.lon.toFixed(5)},${radiusNow()},${prefs.range}` : '');
+function savedOpen() {
+	$('saveRadius').value = String(prefs.saveKm);
+	toWorker({ type: 'areas' });
+	askEstimate();
+	savedUi();
+}
+function askEstimate() {
+	const k = estKey();
+	if (!k) return;
+	if (k !== SV.estFor) SV.est = null;
+	SV.estFor = k;
+	toWorker({ type: 'estimate', key: k, lat: S.place.lat, lon: S.place.lon, radiusKm: radiusNow(), rangeKm: prefs.range });
+}
+function saveArea(a) {
+	if (SV.saving) return;
+	try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) { /* optional */ }
+	if (!toWorker({ type: 'save', ...a, rangeKm: a.range })) return;
+	SV.saving = a.id; SV.prog = null; SV.resuming = (SV.areas || []).some((x) => x.id === a.id);
+	$('saveStatus').textContent = `Saving “${a.name}”…`;
+	savedUi();
+}
+$('saveBtn').addEventListener('click', () => {
+	const p = S.place;
+	if (!p) return;
+	saveArea({ id: 'a' + Date.now().toString(36), name: areaName(p), lat: p.lat, lon: p.lon, radiusKm: radiusNow(), range: prefs.range });
+});
+$('saveStop').addEventListener('click', () => { if (SV.saving) toWorker({ type: 'saveCancel', id: SV.saving }); });
+$('saveRadius').addEventListener('change', () => { prefs.saveKm = radiusNow(); savePrefs(); askEstimate(); savedUi(); });
+function disarm() { clearTimeout(SV.armTimer); if (SV.armed) { SV.armed = null; savedUi(); } }
+function onSaved(m) {
+	if (m.type === 'areas') {
+		SV.areas = Array.isArray(m.areas) ? m.areas : [];
+		SV.saving = m.saving || null;
+		if (!SV.saving) SV.prog = null;
+	} else if (m.type === 'estimate') {
+		if (m.key === SV.estFor) SV.est = m;
+	} else if (m.type === 'saveProgress') {
+		SV.saving = m.id; SV.prog = m;
+	} else if (m.type === 'saved') {
+		SV.saving = null; SV.prog = null;
+		const known = (SV.areas || []).find((a) => a.id === m.id), name = (m.area && m.area.name) || (known && known.name) || 'the area';
+		const text = m.ok ? `Saved “${name}” (${mbText(m.area.bytes)}): it works there without signal now.`
+			: m.area ? `“${name}” is saved apart from ${m.missing} of ${m.total} pieces that didn’t download. Tap Finish to try again.`
+			: m.stopped ? (SV.resuming ? `Stopped. “${name}” is still not finished: tap Finish to carry on.` : 'Stopped. Nothing was kept.')
+			: m.message || 'It didn’t finish.';
+		$('saveStatus').textContent = text;
+		if (!$('placeSheet').open) toast(text, 5000);
+		askEstimate();
+	}
+	savedUi();
+}
+function savedUi() {
+	const p = S.place, busy = !!SV.saving, r = radiusNow(), e = SV.est && SV.est.key === estKey() ? SV.est : null;
+	const areas = SV.areas || [];
+	// Already inside a finished area that big, saved for this range? (An automatic range needs both 150
+	// and 250 km; a fixed one is covered by any area saved for at least as far.)
+	const covers = (a) => a.range === 'auto' || (prefs.range !== 'auto' && prefs.range <= a.range);
+	const inside = p && areas.find((a) => a.status === 'saved' && covers(a) && km(a.lat, a.lon, p.lat, p.lon) + r <= a.radiusKm + 0.05);
+	$('saveBtn').disabled = !p || busy || !!inside;
+	const where = !p ? '' : p.source === 'gps' ? 'where you are' : areaName(p);
+	$('saveEst').textContent = !p ? 'Choose a place first.' : inside ? `Already saved, as part of “${inside.name}”.`
+		: e ? (e.have >= e.tiles && e.bytes < 1e5 ? 'Already saved.' : `Anywhere within ${r} km of ${where}: about ${mbText(Math.max(e.bytes, 1e5))} to download.`)
+		: 'Working out the size…';
+	$('saveProg').hidden = !busy;
+	$('saveText').hidden = !(busy && SV.prog);
+	if (busy && SV.prog) {
+		const pr = SV.prog;
+		$('saveBar').max = Math.max(1, pr.total); $('saveBar').value = pr.done;
+		$('saveText').textContent = `${pr.done} of ${pr.total} pieces, ${mbText(pr.bytes)}`;
+	}
+	$('savedIos').hidden = !(IOS_DEVICE && !IOS_APP);
+	// The list is rebuilt only when it changes (not on every progress message), so focus stays put.
+	const sig = JSON.stringify([areas, SV.saving, SV.armed]);
+	if (sig === SV.drawn) return;
+	SV.drawn = sig;
+	const ul = $('savedList');
+	ul.hidden = !areas.length;
+	const had = ul.contains(document.activeElement) ? document.activeElement.dataset.k : null;
+	ul.replaceChildren(...areas.slice().sort((a, b) => b.savedAt - a.savedAt).map(areaItem));
+	if (had) { const el = ul.querySelector(`[data-k="${had}"]`); if (el) el.focus(); }
+}
+function areaItem(a) {
+	const li = document.createElement('li'), go = document.createElement('button'), n = document.createElement('span'), w = document.createElement('span');
+	li.className = 'area';
+	go.type = 'button'; go.className = 'res'; go.title = 'Look from here'; go.dataset.k = a.id + ':go';
+	n.className = 'rn'; n.textContent = a.name;
+	const when = a.savedAt ? new Date(a.savedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(new Date(a.savedAt).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }) : '';
+	w.className = 'rw';
+	w.textContent = `Within ${a.radiusKm} km · ` + (a.id === SV.saving ? 'saving…' : a.status === 'saved' ? `${mbText(a.bytes)} · saved ${when}` : `not finished${a.missing ? ` (${a.missing} pieces missing)` : ''}`);
+	go.append(n, w);
+	go.addEventListener('click', () => { closeSheet($('placeSheet')); choosePlace({ name: a.name, lat: a.lat, lon: a.lon, source: 'saved' }); });
+	li.append(go);
+	const side = (label, k, fn, armed = false) => {
+		const b = document.createElement('button');
+		b.type = 'button'; b.className = 'side' + (armed ? ' armed' : ''); b.textContent = label; b.dataset.k = a.id + ':' + k;
+		b.setAttribute('aria-label', `${label}: ${a.name}`);
+		b.addEventListener('click', fn);
+		return b;
+	};
+	if (a.id === SV.saving) return li;
+	if (a.status !== 'saved') li.append(side('Finish', 'fin', () => saveArea(a)));
+	const armed = SV.armed === a.id;
+	li.append(side(armed ? 'Tap again' : 'Delete', 'del', () => {
+		clearTimeout(SV.armTimer);
+		if (armed) { SV.armed = null; toWorker({ type: 'unsave', id: a.id }); $('saveStatus').textContent = `Deleted “${a.name}”.`; }
+		else { SV.armed = a.id; SV.armTimer = setTimeout(disarm, 4000); }
+		savedUi();
+	}, armed));
+	return li;
+}
 
 // The Detail slider.
 function setDetail(v) {
@@ -1281,4 +1416,6 @@ window.__XRAY = {
 	select(id) { S.selected = id; S.dirty = true; cardUi(); },
 	behindWords,
 	link: linkFor,
+	// saved areas: the page's view of them ({ areas, saving, prog, est, … })
+	get saved() { return { ...SV }; },
 };

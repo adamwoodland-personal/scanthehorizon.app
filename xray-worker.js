@@ -8,6 +8,16 @@
 //   {type:'cancel', gen}       stop; in-flight tile fetches are aborted.
 //   {type:'decoder', main}     from decode.js attachDecodeFallback(): the page will decode WebP
 //   {type:'decoded', id, …}    for a worker without OffscreenCanvas (see decode.js).
+//   Saved areas (saved.js; these carry no gen, as they aren't part of a view):
+//   {type:'areas'}             → {type:'areas', areas: [summary], saving: id|null}
+//   {type:'estimate', key, lat, lon, radiusKm, rangeKm}
+//                              → {type:'estimate', key, tiles, places, bytes (to download, estimated), have (tiles already saved)}
+//   {type:'save', id, name, lat, lon, radiusKm, rangeKm}
+//                              → {type:'saveProgress', id, done, total, bytes} …, then {type:'saved', id, ok, area?,
+//                                 missing?, stopped?, message?} and a fresh 'areas'. The same id again finishes an
+//                                 unfinished area. One save at a time.
+//   {type:'saveCancel', id}    stop it: a new area is forgotten with its downloads; an unfinished one stays unfinished.
+//   {type:'unsave', id}        delete an area (and whatever only it used) → 'areas'.
 // worker → main (each carries the gen it answers; drop stale ones)
 //   progress, pano (coarse at 0.5° once the z7–z9 rings are in, then full at 0.2°), labels, error,
 //   stats, and {type:'decode', id, blob} for the decode fallback. Arrays are transferred.
@@ -33,8 +43,9 @@
 // the plan now in use wants it, so stale work can't refill the store after a prune.
 import * as D from './dem.js';
 import { computePanorama, linkRidges } from './pano.js';
-import { loadPlaces, snapPeaks, liftPeaks, buildLabels } from './targets.js';
+import { loadPlaces, placeTileUrls, snapPeaks, liftPeaks, buildLabels } from './targets.js';
 import { canaryBlob, canaryOk, decodeBitmap, decodePNG, MainThreadDecoder } from './decode.js';
+import { SavedStore, areaTiles, awsChildren, summary, RADII, DEFAULT_RADIUS, MAX_AREAS } from './saved.js';
 
 export const EYE = 1.6;                    // eye above the ground, metres
 export const AUTO_KM = 150, ALPS_KM = 250, ALPS_TRIGGER_M = 1500;
@@ -44,6 +55,12 @@ export const PLACES_GRACE_MS = 1500;
 // The coarse pano needs this share of the coarse rings' tiles (holes would read as flat sea).
 const COARSE_MIN_SHARE = 0.8;
 const PENDING = Symbol('pending');
+// Saving an area: downloads at a time (fewer than a view's, so a view started meanwhile isn't
+// starved), and how many Mapterhorn failures with no success at all mean it isn't answering.
+const SAVE_CONCURRENCY = 4, SAVE_GIVE_UP = 6;
+// For the estimate, when the view on screen holds no tile of a zoom to go by (bytes).
+const EST_TILE = 120000, EST_PLACES = 20000;
+const TILE_INIT = { mode: 'cors', credentials: 'omit' };
 
 export class Engine {
 	// env: { post(msg, transfer), fetch, caches, placesBase, decodeOverride?(url, blob, src),
@@ -52,7 +69,20 @@ export class Engine {
 		this.env = env;
 		const dl = env.deadlines || {};
 		this.deadlines = { tile: { ...D.DEADLINES.tile, ...dl.tile }, places: { ...D.DEADLINES.places, ...dl.places } };
-		this.fetcher = new D.TileFetcher({ fetch: env.fetch, caches: env.caches || null, deadline: this.deadlines.tile });
+		this.saved = new SavedStore({ caches: env.caches || null });
+		this.saving = null;                 // the save in progress: { id, ac }
+		this.fetcher = new D.TileFetcher({ fetch: env.fetch, caches: env.caches || null, deadline: this.deadlines.tile, pinned: this.saved });
+		// Place names: a saved area's copy of a tile first (offline it may be all there is); the index
+		// from the network first (it changes with the data), and the saved copy only if that fails.
+		this.placesFetch = async (url, init) => {
+			const index = /\/index\.json$/.test(url);
+			if (!index) { const hit = await this.saved.match(url); if (hit) return hit; }
+			try { return await env.fetch(url, init); } catch (e) {
+				const hit = index ? await this.saved.match(url) : null;
+				if (hit) return hit;
+				throw e;
+			}
+		};
 		this.store = new Map();             // tile key → { status: 'ok'|'sea'|'none', data, src, bytes }
 		this.inflight = new Map();          // tile key → { p, signal, fetched }
 		this.keep = null;                   // tile keys the plan in use wants (from prune)
@@ -70,6 +100,11 @@ export class Engine {
 		if (m.type === 'decoded') { if (this.mainDecoder) this.mainDecoder.answer(m); return; }
 		if (m.type === 'run') return this.run(m);
 		if (m.type === 'eye') return this.eye(m);
+		if (m.type === 'areas') return this.sendAreas();
+		if (m.type === 'estimate') return this.estimate(m);
+		if (m.type === 'save') return this.save(m);
+		if (m.type === 'saveCancel') { if (this.saving && (!m.id || m.id === this.saving.id)) { this.saving.stopped = true; this.saving.ac.abort(); } return; }
+		if (m.type === 'unsave') return this.unsave(m);
 		if (m.type === 'cancel') {
 			this.runId++; this.gen = m.gen;
 			if (this.ac) { this.ac.abort(); this.ac = null; }
@@ -160,6 +195,7 @@ export class Engine {
 					const r = await this.fetchTile(src, z, x, y, rc, got);
 					if (r.status === 404) e = z <= src.planetMaxZ ? { status: 'sea', data: D.seaTile(src.size), src: 'mapterhorn' } : { status: 'none', data: null, src: 'mapterhorn' };
 					else e = { status: 'ok', data: D.toStorage(r.heights, zM), src: 'mapterhorn' };
+					e.bytes = r.bytes;              // (what saving an area would download: estimate())
 					st.mtOk++;
 				} catch (err) {
 					if (signal.aborted) throw err;
@@ -267,7 +303,8 @@ export class Engine {
 		const fatal = (fails) => Object.assign(new Error(failText(fails, st.total)), { code: 'terrain', fatal: true });
 		try {
 			if (!(Math.abs(lat) <= 85 && Math.abs(lon) <= 180)) throw Object.assign(new Error('bad position'), { code: 'terrain', fatal: true });
-			const dec = await this.ensureDecoder();
+			// (the saved areas' list read again, in case another tab saved or deleted one)
+			const [dec] = await Promise.all([this.ensureDecoder(), this.saved.refresh()]);
 			if (stale()) return;
 			let srcId = p.source === 'aws' ? 'aws' : 'mapterhorn';
 			if (srcId === 'mapterhorn' && !dec.webp) {
@@ -402,7 +439,7 @@ export class Engine {
 	startPlaces(rc, lat, lon, rangeKm, ms) {
 		if (!this.env.placesBase) return Promise.resolve({ places: null, err: null });
 		const tP = now();
-		return loadPlaces({ base: this.env.placesBase, lat, lon, rangeKm, fetch: this.env.fetch, signal: rc.signal, deadline: this.deadlines.places,
+		return loadPlaces({ base: this.env.placesBase, lat, lon, rangeKm, fetch: this.placesFetch, signal: rc.signal, deadline: this.deadlines.places,
 			onProgress: (done, total, bytes) => { if (rc.id === this.runId) this.post({ type: 'progress', gen: this.gen, stage: 'places', done, total, bytes }); } })
 			.then((places) => { ms.places = now() - tP; return { places, err: null }; }, (err) => ({ places: null, err }));
 	}
@@ -416,6 +453,149 @@ export class Engine {
 		if (this.held.places) this.labels(full, ms, wall, T0); else this.post({ type: 'labels', gen: this.gen, items: [] });
 		this.post({ type: 'stats', gen: this.gen, ms: roundAll(ms), wall: roundAll(wall), tiles: 0, bytes: 0, net: 0, cached: 0, source: this.held.src, rangeKm: this.held.rangeKm, memMB: this.memMB() });
 		this.releaseProfile();
+	}
+
+	// ---- Saved areas (saved.js) ------------------------------------------------------------------------
+	async sendAreas() {
+		const m = await this.saved.read();
+		this.post({ type: 'areas', areas: m.areas.map(summary), saving: this.saving ? this.saving.id : null });
+	}
+	areaPlaceUrls(a) {
+		if (!this.env.placesBase) return Promise.resolve([]);
+		return placeTileUrls({ base: this.env.placesBase, lat: a.lat, lon: a.lon, rangeKm: Math.max(...a.ranges) + a.radiusKm, fetch: this.placesFetch, deadline: this.deadlines.places });
+	}
+	// What saving an area here would download: each tile at what the view on screen paid for it, or
+	// the average for its zoom in that view (else the view's average, else EST_TILE); a tile already
+	// saved costs nothing. Place-name tiles at the view's average.
+	async estimate(m) {
+		const a = areaSpec(m);
+		if (!a) return;
+		await this.saved.refresh();
+		const tiles = areaTiles(a.lat, a.lon, a);
+		let places = [];
+		try { places = await this.areaPlaceUrls(a); } catch (e) { /* no index to be had: the terrain alone */ }
+		const perZ = new Map();
+		let sum = 0, n = 0;
+		for (const e of this.store.values()) {
+			if (e.src !== 'mapterhorn' || !(e.bytes >= 0) || !e.key) continue;
+			const z = +e.key.split('/')[1], s = perZ.get(z) || [0, 0];
+			s[0] += e.bytes; s[1]++; perZ.set(z, s); sum += e.bytes; n++;
+		}
+		const avg = (z) => { const s = perZ.get(z); return s ? s[0] / s[1] : n ? sum / n : EST_TILE; };
+		let bytes = 0, have = 0;
+		for (const t of tiles) {
+			if (this.saved.urls.has(t.url)) { have++; continue; }
+			const e = this.store.get(D.tileKey('mapterhorn', t.z, t.x, t.y));
+			bytes += e && e.bytes >= 0 ? e.bytes : avg(t.z);
+		}
+		const pl = this.held && this.held.places, perPlace = pl && pl.tiles ? pl.bytes / pl.tiles : EST_PLACES;
+		for (const u of places) if (!this.saved.urls.has(u)) bytes += perPlace;
+		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have });
+	}
+	// Save an area, or finish an unfinished one (the same id again). Each response is taken from this
+	// store if it's already there (another area, or an earlier try), else from the terrain cache, else
+	// downloaded. A new area that is stopped, runs out of room or can't be downloaded at all is
+	// forgotten with everything it brought; one with only some pieces missing is kept, unfinished.
+	async save(m) {
+		const id = typeof m.id === 'string' && /^[\w-]{1,40}$/.test(m.id) ? m.id : null;
+		const a = areaSpec(m);
+		const answer = (x) => this.post({ type: 'saved', id, ...x });
+		if (!id || !a) return answer({ ok: false, message: 'Nothing to save.' });
+		if (this.saving) return answer({ ok: false, message: 'Another area is still being saved.' });
+		const job = this.saving = { id, ac: new AbortController(), stopped: false, deleted: false };
+		const signal = job.ac.signal, store = this.saved;
+		let area = null, isNew = true, urls = new Set(), bytes = 0, missing = 0, done = 0, total = 0;
+		try {
+			if (!(await store.cache())) throw sayable('This browser isn’t letting the page keep anything (a private window?).');
+			const mf0 = await store.read(), before = mf0.areas.find((x) => x.id === id);
+			isNew = !before;
+			if (isNew && mf0.areas.length >= MAX_AREAS) throw sayable(`There are already ${MAX_AREAS} saved areas: delete one first.`);
+			const tiles = areaTiles(a.lat, a.lon, a);
+			let places;
+			try { places = await this.areaPlaceUrls(a); } catch (e) { throw sayable('The place names couldn’t be reached. Check the connection, then try again.'); }
+			const index = this.env.placesBase ? [new URL('index.json', this.env.placesBase).href] : [];
+			urls = new Set([...(before ? before.urls : []), ...tiles.map((t) => t.url), ...places, ...index]);
+			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, range: a.range,
+				savedAt: Date.now(), status: 'saving', urls: [...urls], bytes: 0, missing: 0 };
+			// Listed before the first download, so a page closed half way leaves an unfinished area (to
+			// finish or delete), never tiles that nothing lists.
+			await store.update((mf) => { mf.areas = mf.areas.filter((x) => x.id !== id).concat(area); });
+			total = tiles.length + places.length + index.length;
+			const tick = () => this.post({ type: 'saveProgress', id, done, total, bytes });
+			tick();
+			const c = await store.cache();
+			const keep = async (url, { deadline, init, peek = false, allow404 = false }) => {
+				const had = await c.match(url).catch(() => null);
+				if (had && (had.ok || allow404)) return { status: had.status, bytes: +had.headers.get('x-xray-bytes') || 0 };
+				let r = peek ? await this.fetcher.peek(url) : null;
+				if (!r) r = await D.fetchWithDeadline(this.env.fetch, url, { signal, ...deadline, init });
+				if (!r.ok && !(allow404 && r.status === 404)) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+				if (signal.aborted) throw D.abortError();
+				await c.put(url, new Response(r.blob, { status: r.status, headers: { 'content-type': r.type || 'application/octet-stream', 'x-xray-bytes': String(r.blob.size) } }));
+				return { status: r.status, bytes: r.blob.size };
+			};
+			const fatal = (e) => signal.aborted || !!(e && (e.sayable || e.name === 'QuotaExceededError'));
+			let mtOk = 0, mtFail = 0;
+			const terrain = async (t) => {
+				try { bytes += (await keep(t.url, { deadline: this.deadlines.tile, init: TILE_INIT, peek: true, allow404: true })).bytes; mtOk++; }
+				catch (err) {
+					if (fatal(err)) throw err;
+					if (++mtFail >= SAVE_GIVE_UP && !mtOk) throw sayable('The elevation data isn’t answering just now. Try again later.');
+					// as the engine does online: the four AWS tiles below it, stitched in its place
+					try {
+						for (const u of awsChildren(t)) {
+							urls.add(u);
+							const r = await keep(u, { deadline: this.deadlines.tile, init: TILE_INIT, peek: true });
+							bytes += r.bytes;
+						}
+					} catch (err2) { if (fatal(err2)) throw err2; missing++; }
+				}
+			};
+			const place = async (u) => {
+				try { bytes += (await keep(u, { deadline: this.deadlines.places, init: {} })).bytes; }
+				catch (err) { if (fatal(err)) throw err; missing++; }
+			};
+			const jobs = [...tiles.map((t) => () => terrain(t)), ...[...places, ...index].map((u) => () => place(u))];
+			let next = 0, failure = null;
+			const runner = async () => {
+				while (next < jobs.length && !failure && !signal.aborted) {
+					const fn = jobs[next++];
+					try { await fn(); } catch (e) { failure = failure || e; job.ac.abort(); return; }
+					done++; tick();
+				}
+			};
+			await Promise.all(Array.from({ length: Math.min(SAVE_CONCURRENCY, jobs.length) }, runner));
+			if (failure) throw failure;
+			if (signal.aborted) throw D.abortError();
+			Object.assign(area, { urls: [...urls], bytes, missing, status: missing ? 'saving' : 'saved', savedAt: Date.now() });
+			await store.update((mf) => { mf.areas = mf.areas.filter((x) => x.id !== id).concat(area); });
+			answer({ ok: !missing, area: summary(area), missing, total, message: missing ? `${missing} of ${total} pieces didn’t download.` : '' });
+		} catch (err) {
+			const message = job.stopped ? 'Stopped.' : err && err.name === 'QuotaExceededError' ? 'There isn’t room on this phone for this area. Try a smaller one, or delete another saved area.'
+				: err && err.sayable ? err.message : `It didn’t finish (${(err && err.message) || err}). Check the connection, then try again.`;
+			try {
+				if (area && !isNew && !job.deleted) {
+					Object.assign(area, { urls: [...urls], bytes, missing: Math.max(1, total - done) });
+					await store.update((mf) => { mf.areas = mf.areas.filter((x) => x.id !== id).concat(area); });
+				} else if (area) {
+					await store.remove(id);
+					await store.sweep();              // (and any AWS tiles it found it needed, not listed yet)
+				}
+			} catch (e) { /* storage refused: the next delete sweeps */ }
+			answer({ ok: false, stopped: job.stopped, message });
+		} finally {
+			this.saving = null;
+			await this.sendAreas();
+		}
+	}
+	async unsave(m) {
+		if (this.saving && this.saving.id === m.id) { this.saving.stopped = this.saving.deleted = true; this.saving.ac.abort(); return; } // save() tidies up
+		try {
+			await this.saved.remove(m.id);
+			// A sweep would take a save in progress's AWS tiles, which it lists only at the end.
+			if (!this.saving) await this.saved.sweep();
+		} catch (e) { /* storage refused */ }
+		await this.sendAreas();
 	}
 	// Peak memory held for the view (MB): the decoded tiles plus the full pano's running-max profile.
 	memMB() {
@@ -486,6 +666,16 @@ function failText(fails, total) {
 	const first = fails[0] && fails[0].err;
 	return `${fails.length} of ${total} terrain tiles failed ${kinds.length === 1 ? WHERE[kinds[0]] : 'on Mapterhorn and AWS'}: ${(first && first.message) || first}`;
 }
+// A save or estimate request's area: centre, radius, and the ranges a view there may use (an
+// automatic range can be either; a smaller fixed range needs only part of a bigger one's tiles).
+function areaSpec(m) {
+	const lat = +m.lat, lon = +m.lon;
+	if (!(Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 85 && Math.abs(lon) <= 180)) return null;
+	const radiusKm = RADII.includes(+m.radiusKm) ? +m.radiusKm : DEFAULT_RADIUS;
+	const auto = m.rangeKm === 'auto' || m.rangeKm == null, fixed = Math.max(10, Math.min(300, +m.rangeKm || AUTO_KM));
+	return { lat, lon, radiusKm, range: auto ? 'auto' : fixed, ranges: auto ? [AUTO_KM, ALPS_KM] : [fixed] };
+}
+const sayable = (message) => Object.assign(new Error(message), { sayable: true });
 // Share of these rings' tiles that hold data.
 function share(rings, store) {
 	let n = 0, ok = 0;

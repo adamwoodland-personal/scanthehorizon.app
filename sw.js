@@ -4,14 +4,19 @@
 //    styles, every JS module including the worker's, the icons and the place-names index) is
 //    precached, so the page opens without a connection once it has been opened.
 //  - Place-name tiles (/data/places/v1/<lat>/<lon>.json, fetched by the page's worker): CACHE-FIRST,
-//    kept as they arrive (the newest PLACES_MAX), so a view opened before still has its names
-//    offline. They live in this version's cache, so a deploy (a new CACHE) fetches them afresh.
+//    kept as they arrive (the newest PLACES_MAX) in their own cache, PLACES, which a deploy leaves
+//    alone: their URL carries the data's version (v1), so they can't go stale, and a view opened
+//    before keeps its names offline after an update. (Until sth-v2 they lived in the versioned cache
+//    and every deploy threw them away; activate moves any found in an older cache across.) If the
+//    data's version changes, rename PLACES with it, and activate deletes the old one.
 //  - Cross-origin requests are never touched. The terrain tiles (Mapterhorn, AWS) are cached by the
-//    page's worker itself, in Cache API 'xray-dem-v1' (180 days, about 400 tiles), which this worker
-//    never deletes; the place search needs a connection anyway.
+//    page's worker itself, in Cache API 'xray-dem-v1' (180 days, about 400 tiles), and saved areas
+//    in 'xray-saved-v1' (saved.js, until the visitor deletes them): this worker never deletes either.
+//    The place search needs a connection anyway.
 //  - On activate, only this site's older caches (names starting 'sth-') are deleted.
 //  - Bump CACHE on every deploy that changes a precached file.
-const CACHE = 'sth-v1';
+const CACHE = 'sth-v2';
+const PLACES = 'sth-places-v1';
 const PLACES_MAX = 300;
 const CORE = [
 	'/',
@@ -27,6 +32,7 @@ const CORE = [
 	'/dem.js',
 	'/pano.js',
 	'/targets.js',
+	'/saved.js',
 	'/favicon.svg',
 	'/manifest.json',
 	'/icon-192.png',
@@ -36,6 +42,7 @@ const CORE = [
 	'/data/places/v1/index.json'
 ];
 const PLACE_TILE = /^\/data\/places\/v1\/-?\d+\/-?\d+\.json$/;
+const isPlaceTile = (r) => PLACE_TILE.test(new URL(r.url).pathname);
 
 self.addEventListener('install', (e) => {
 	// cache: 'no-cache' revalidates each file with the server (a 304 costs no body), so a deploy never
@@ -46,11 +53,23 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-	e.waitUntil(
-		caches.keys()
-			.then((keys) => Promise.all(keys.filter((k) => k.startsWith('sth-') && k !== CACHE).map((k) => caches.delete(k))))
-			.then(() => self.clients.claim())
-	);
+	e.waitUntil((async () => {
+		const old = (await caches.keys()).filter((k) => k.startsWith('sth-') && k !== CACHE && k !== PLACES);
+		const keep = await caches.open(PLACES);
+		for (const k of old) {
+			try {
+				const c = await caches.open(k);
+				for (const r of (await c.keys()).filter(isPlaceTile)) {
+					if (await keep.match(r)) continue;
+					const res = await c.match(r);
+					if (res) await keep.put(r, res);
+				}
+			} catch (err) { /* storage full or refused: those names are fetched again when needed */ }
+			await caches.delete(k);
+		}
+		await trim(keep).catch(() => {});
+		await self.clients.claim();
+	})());
 });
 
 self.addEventListener('fetch', (e) => {
@@ -63,7 +82,7 @@ self.addEventListener('fetch', (e) => {
 });
 
 async function placeTile(e, req) {
-	const c = await caches.open(CACHE);
+	const c = await caches.open(PLACES);
 	const hit = await c.match(req, { ignoreSearch: true });
 	if (hit) return hit;
 	const res = await fetch(req);
@@ -74,7 +93,7 @@ async function placeTile(e, req) {
 
 // Keep the newest PLACES_MAX place tiles (a cache's keys come back in the order they were stored).
 async function trim(c) {
-	const tiles = (await c.keys()).filter((r) => PLACE_TILE.test(new URL(r.url).pathname));
+	const tiles = (await c.keys()).filter(isPlaceTile);
 	for (const r of tiles.slice(0, Math.max(0, tiles.length - PLACES_MAX))) await c.delete(r);
 }
 

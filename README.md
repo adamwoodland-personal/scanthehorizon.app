@@ -19,7 +19,8 @@ Static files, no framework, no build step, no backend ("xray" in the file names 
   - `pano.js`: the panorama: the skyline and the ridge lines, bearing by bearing, with the curve of the Earth and refraction;
   - `targets.js`: the place names round the observer, which of them can be seen, and how they rank.
 - `attitude.js`: quaternion helpers for the camera view. `orientation.js`: the phone's attitude, the iPhone compass calibration and the World Magnetic Model 2025 (a copy of the one on [lookupanddown.com](https://lookupanddown.com/)). `geocode.js`: the place search (Photon, then Open-Meteo).
-- `sw.js`, `manifest.json` and the icons: an installable app that works offline once opened. Bump `CACHE` in `sw.js` whenever a precached file changes.
+  - `saved.js`: saved areas ("Use it without signal" in the place sheet): which tiles a view from anywhere within a few km of a place needs, kept in the Cache API (`xray-saved-v1`) until deleted.
+- `sw.js`, `manifest.json` and the icons: an installable app that works offline once opened. Bump `CACHE` in `sw.js` whenever a precached file changes; place-name tiles are kept in their own cache (`sth-places-v1`), which a new `CACHE` leaves alone.
 
 No three.js or other library: the drawing is a 2D canvas.
 
