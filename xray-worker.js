@@ -2,9 +2,10 @@
 // Start it with new Worker('xray-worker.js', { type: 'module' }).
 //
 // main → worker
-//   {type:'run', gen, lat, lon, agl, rangeKm|'auto', lite, source:'auto'|'mapterhorn'|'aws', facing?}
-//       a new place. facing (optional, degrees true) fetches that sector of each ring first.
-//   {type:'eye', gen, agl}     new height above ground: recompute with the DEM already held.
+//   {type:'run', gen, lat, lon, agl, rangeKm|'auto', lite, source:'auto'|'mapterhorn'|'aws', facing?, summit?}
+//       a new place. facing (optional, degrees true) fetches that sector of each ring first. summit
+//       (default true): look from the top of a named summit listed within 150 m (targets.js summitNear).
+//   {type:'eye', gen, agl, summit?}  new height above ground, or summit on or off: recompute with the DEM already held.
 //   {type:'cancel', gen}       stop; in-flight tile fetches are aborted.
 //   {type:'decoder', main}     from decode.js attachDecodeFallback(): the page will decode WebP
 //   {type:'decoded', id, …}    for a worker without OffscreenCanvas (see decode.js).
@@ -21,7 +22,7 @@
 // worker → main (each carries the gen it answers; drop stale ones)
 //   progress, pano (coarse at 0.5° once the z7–z9 rings are in, then full at 0.2°), labels, error,
 //   stats, and {type:'decode', id, blob} for the decode fallback. Arrays are transferred.
-//   pano also carries sea: Uint8Array(n), 1 where the skyline is sea or flat ground at 0 m, 2 where
+//   pano also carries summit: {name, dist} when the eye was put on a summit (else null), and sea: Uint8Array(n), 1 where the skyline is sea or flat ground at 0 m, 2 where
 //   terrain is still rising at the range edge. Labels also carry wl (Wikipedia language count) and
 //   approx: true where GeoNames has the point on a whole arc-minute (up to ~0.9 km off).
 //   A 'full' pano can come twice: when the place names are late, the full drawing goes out without
@@ -43,7 +44,7 @@
 // the plan now in use wants it, so stale work can't refill the store after a prune.
 import * as D from './dem.js';
 import { computePanorama, linkRidges } from './pano.js';
-import { loadPlaces, placeTileUrls, snapPeaks, liftPeaks, buildLabels } from './targets.js';
+import { loadPlaces, placeTileUrls, snapPeaks, liftPeaks, summitNear, buildLabels } from './targets.js';
 import { canaryBlob, canaryOk, decodeBitmap, decodePNG, MainThreadDecoder } from './decode.js';
 import { SavedStore, areaTiles, awsChildren, summary, RADII, DEFAULT_RADIUS, MAX_AREAS } from './saved.js';
 
@@ -293,6 +294,7 @@ export class Engine {
 			lat, lon, agl: Math.max(0, +m.agl || 0), lite: !!m.lite,
 			source: m.source === 'aws' || m.source === 'mapterhorn' ? m.source : 'auto',
 			facing: Number.isFinite(+m.facing) && m.facing !== null && m.facing !== undefined ? ((+m.facing % 360) + 360) % 360 : null,
+			summit: m.summit !== false,
 		};
 		const T0 = now();
 		const st = { fetchMs: 0, decodeMs: 0, bytes: 0, net: 0, cached: 0, aws: 0, mtOk: 0, mtHeld: 0, mtFail: 0, total: 0, keys: new Set(), failed: new Set() };
@@ -396,21 +398,23 @@ export class Engine {
 			let early = false;
 			if (pl === PENDING) {
 				early = true;
-				this.held = { rings, places: null, snaps: null, rangeKm, src };
+				this.held = { rings, places: null, snaps: null, summit: null, rangeKm, src };
 				this.computeFull(ms, now(), wall, T0);
 				pl = await placesP;
 				if (stale()) return;
 			}
 			const places = pl.places;
 			const t2 = now();
-			let snaps = null, lifted = 0;
+			let snaps = null, lifted = 0, summit = null;
 			if (places) {
 				snaps = snapPeaks(places.records, rings, lat, lon, rangeKm);
 				lifted = D.liftSummits(rings, liftPeaks(places.records, lat, lon, rangeKm, snaps));
+				summit = summitNear(places.records, snaps, lat, lon);
 			}
-			this.held = { rings, places, snaps, rangeKm, src };
-			// (the early panorama is reused only if nothing was lifted and the height hasn't changed since)
-			const same = early && !lifted && this.lastObs && this.lastObs.h0 === this.observer(rings).h0;
+			this.held = { rings, places, snaps, summit, rangeKm, src };
+			// (the early panorama is reused only if nothing was lifted and the eye hasn't moved since)
+			const o = this.observer(rings);
+			const same = early && !lifted && this.lastObs && this.lastObs.h0 === o.h0 && this.lastObs.lat === o.lat && this.lastObs.lon === o.lon;
 			const full = same ? { pano: this.lastPano, obs: this.lastObs } : this.computeFull(ms, t2, wall, T0);
 			if (pl.err) this.error('places', pl.err.message || pl.err, false);
 			else if (places && places.failed.length) {
@@ -443,10 +447,13 @@ export class Engine {
 			onProgress: (done, total, bytes) => { if (rc.id === this.runId) this.post({ type: 'progress', gen: this.gen, stage: 'places', done, total, bytes }); } })
 			.then((places) => { ms.places = now() - tP; return { places, err: null }; }, (err) => ({ places: null, err }));
 	}
-	// Height above ground changed: recompute from the held DEM (no fetching).
+	// Height above ground, or the summit setting, changed: recompute from the held DEM (no fetching).
 	eye(m) {
 		this.gen = m.gen;
-		if (this.params) this.params.agl = Math.max(0, +m.agl || 0);
+		if (this.params) {
+			this.params.agl = Math.max(0, +m.agl || 0);
+			if (typeof m.summit === 'boolean') this.params.summit = m.summit;
+		}
 		if (this.running || !this.held) return;   // a run in progress picks the new height up itself
 		const ms = { fetch: 0, decode: 0, coarse: 0, full: 0, labels: 0, places: 0 }, wall = {}, T0 = now();
 		const full = this.computeFull(ms, now(), wall, T0);
@@ -610,11 +617,15 @@ export class Engine {
 	// The profile (~7–10 MB) is only needed while the labels are built; a new height builds a new one.
 	// Kept when env.keepCopies (Node tests and the fixture recorder read it afterwards).
 	releaseProfile() { if (!this.env.keepCopies && this.lastPano) this.lastPano.profile = null; }
+	// The eye: at the place, or on the top of a summit listed within 150 m of it, as drawn (summitNear),
+	// when the setting is on. The ground is then the summit's: its official height where it was raised.
 	observer(rings) {
-		const { lat, lon, agl } = this.params;
-		const r = D.finestAt(rings, lat, lon);
-		const ground = r >= 0 ? D.sampleAt(rings, r, lat, lon) : 0;
-		return { lat, lon, ground, h0: ground + EYE + agl };
+		const { lat, lon, agl, summit } = this.params;
+		const top = summit && this.held && this.held.summit;
+		const at = top || { lat, lon };
+		const r = D.finestAt(rings, at.lat, at.lon);
+		const ground = r >= 0 ? D.sampleAt(rings, r, at.lat, at.lon) : 0;
+		return { lat: at.lat, lon: at.lon, ground, h0: ground + EYE + agl, summit: top ? { name: top.name, dist: Math.round(top.dist) } : null };
 	}
 	computeFull(ms, t2, wall, T0) {
 		const { rings, rangeKm, src } = this.held;
@@ -637,7 +648,7 @@ export class Engine {
 	}
 	postPano(stage, pano, ridges, obs, rangeKm, source) {
 		const msg = { type: 'pano', gen: this.gen, stage, step: pano.step, n: pano.n, alt: pano.alt, dist: pano.dist, sea: pano.sea,
-			ground: Math.round(obs.ground * 10) / 10, eye: Math.round(obs.h0 * 10) / 10, rangeKm, ridges, source };
+			ground: Math.round(obs.ground * 10) / 10, eye: Math.round(obs.h0 * 10) / 10, summit: obs.summit, rangeKm, ridges, source };
 		if (this.env.keepCopies) msg.alt = pano.alt.slice(), msg.dist = pano.dist.slice(), msg.sea = pano.sea.slice();
 		this.post(msg, this.env.keepCopies ? [] : [pano.alt.buffer, pano.dist.buffer, pano.sea.buffer, ridges.pts.buffer, ridges.starts.buffer, ridges.dip.buffer, ridges.len.buffer, ridges.med.buffer]);
 	}

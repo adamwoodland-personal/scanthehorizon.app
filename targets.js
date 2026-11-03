@@ -286,6 +286,30 @@ export function liftPeaks(records, lat, lon, rangeKm, snaps = null) {
 	return out;
 }
 
+// Standing on a summit (the setting "Stand on a summit within 150 m", on by default): the named
+// peak or hill whose listed position is nearest the place and within radiusM (MIN_KM, where you
+// stand, so it is never one of the names), at its top as drawn: moved to the DEM's top where
+// snapPeaks moved it, which is also where liftSummits raised it to its official height. A summit
+// picked from the search is given at its real top, but on coarse data the drawn top can be 100 m
+// away: Everest's is 105 m NNE (the data's 8,736 m, raised to 8,848), which put the eye 85 m down
+// the side of the rebuilt summit under a 37° slope. Never for arc-minute-rounded points.
+// → { id, name, lat, lon, ele, dist (m, to the listed position) } or null.
+export const SUMMIT_M = MIN_KM * 1000;
+export function summitNear(records, snaps, lat, lon, radiusM = SUMMIT_M) {
+	let best = null;
+	for (const f of records) {
+		const kind = KIND[f[5]];
+		if (kind !== 'peak' && kind !== 'hill') continue;
+		const pl = f[3] / 1e4, pn = f[4] / 1e4;
+		if (arcMinuteRounded(pl, pn)) continue;
+		const d = haversine(lat, lon, pl, pn);
+		if (d > radiusM || (best && d >= best.dist)) continue;
+		const s = snaps && snaps.get(f[0]), top = s && s.snapped ? s : { lat: pl, lon: pn };
+		best = { id: f[0], name: f[2] || f[1], lat: top.lat, lon: top.lon, ele: f[7] > 0 ? f[7] : null, dist: d };
+	}
+	return best;
+}
+
 // ---- The label list ------------------------------------------------------------------------------
 // The records in range as targets, pre-filtered, each with the height its visibility is tested at
 // (h) and whether it could be a behind-arrow (major). The test set is every place the slider can name

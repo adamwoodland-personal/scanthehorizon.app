@@ -54,7 +54,7 @@ const DEMO = { name: 'Glass House Mountains Lookout', lat: -26.93153, lon: 152.8
 const PREFS = 'xray-prefs-v2', OLD_PREFS = 'xray-prefs-v1';
 const AGLS = [0, 3, 6, 10, 20, 50, 100, 300], EXAGS = [1, 2, 3, 4], EXAG = 3;
 const SAVE_KMS = [2, 5, 10, 20];
-const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, detail: 50, camLong: null, place: null, saveKm: 5 };
+const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5 };
 const readStored = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } };
 function loadPrefs() {
 	const p = { ...DEFAULTS };
@@ -68,6 +68,7 @@ function loadPrefs() {
 	if (raw.range === 'auto' || [50, 100, 150, 250].includes(raw.range)) p.range = raw.range;
 	if (['auto', 'light', 'dark'].includes(raw.theme)) p.theme = raw.theme;
 	if (typeof raw.lite === 'boolean') p.lite = raw.lite;
+	if (typeof raw.summit === 'boolean') p.summit = raw.summit;
 	if (Number.isInteger(raw.detail) && raw.detail >= 0 && raw.detail <= 100) p.detail = raw.detail;
 	if (!old && typeof raw.camLong === 'number' && raw.camLong >= 20 && raw.camLong <= 120) p.camLong = raw.camLong;
 	if (SAVE_KMS.includes(raw.saveKm)) p.saveKm = raw.saveKm;
@@ -185,16 +186,29 @@ function startRun() {
 	if (!S.pano || !S.pano.place || km(S.pano.place.lat, S.pano.place.lon, S.place.lat, S.place.lon) > 2) { S.pano = null; S.labels = []; S.order = []; S.placed = []; }
 	const conn = navigator.connection;
 	const lite = prefs.lite || !!(conn && conn.saveData);
-	worker.postMessage({ type: 'run', gen, lat: S.place.lat, lon: S.place.lon, agl: aglMetres(), rangeKm: prefs.range, lite, source: S.source || 'auto', facing: wrap360(S.look.az) });
+	worker.postMessage({ type: 'run', gen, lat: S.place.lat, lon: S.place.lon, agl: aglMetres(), rangeKm: prefs.range, lite, source: S.source || 'auto', facing: wrap360(S.look.az), summit: prefs.summit });
 	S.dirty = true;
 	progressUi(); cardUi();
+}
+// The eye is put on the top of a summit listed within 150 m (the setting, on by default; the worker
+// does it): said once for each place and summit, unless the place is that summit by name (a peak
+// picked from the search), where it goes without saying.
+let summitTold = '';
+function summitNote(top) {
+	if (!top || !S.place) return;
+	const key = `${S.place.source}|${S.place.name}|${top.name}`;
+	if (key === summitTold) return;
+	summitTold = key;
+	const a = S.place.name.toLowerCase(), b = top.name.toLowerCase();
+	if (S.place.source !== 'gps' && (a.includes(b) || b.includes(a))) return;
+	toast(`Looking from the top of ${top.name}, ${nf(top.dist)} m away (you can change this in Settings)`, 6000);
 }
 function changeEye() {
 	if (!worker || !S.pano) { startRun(); return; }
 	const gen = ++S.gen;
 	S.ready = false; S.readyPending = false; S.labelsIn = false;
 	S.heardAt = performance.now(); S.stalled = false;
-	worker.postMessage({ type: 'eye', gen, agl: aglMetres() });
+	worker.postMessage({ type: 'eye', gen, agl: aglMetres(), summit: prefs.summit });
 }
 // A watchdog: a run that hears nothing from the worker for STALL ms before it is finished (no
 // panorama, or a first rough one and then nothing) has stalled, say on a download that never
@@ -230,7 +244,7 @@ function onWorker(m) {
 		S.pano = m;
 		if (m.source === 'aws' || m.source === 'mixed') { S.awsUsed = true; $('awsCredit').hidden = false; }
 		S.terrainErr = null;
-		if (m.stage === 'full') progressUi(true);
+		if (m.stage === 'full') { progressUi(true); summitNote(m.summit); }
 		S.dirty = true;
 		checkReady();
 		break;
@@ -894,6 +908,7 @@ function settingsUi() {
 	for (const r of document.querySelectorAll('input[name="theme"]')) r.checked = r.value === prefs.theme;
 	$('setRange').value = String(prefs.range);
 	$('setLite').checked = prefs.lite;
+	$('setSummit').checked = prefs.summit;
 }
 function setSetting(k, v) {
 	if (k === 'agl') {
@@ -905,6 +920,7 @@ function setSetting(k, v) {
 	else if (k === 'range' && (v === 'auto' || [50, 100, 150, 250].includes(+v))) { prefs.range = v === 'auto' ? 'auto' : +v; startRun(); }
 	else if (k === 'theme' && ['auto', 'light', 'dark'].includes(v)) { prefs.theme = v; applyTheme(); }
 	else if (k === 'lite') { prefs.lite = !!v; startRun(); }
+	else if (k === 'summit') { prefs.summit = !!v; changeEye(); }
 	else if (k === 'detail') { setDetail(v); return; }
 	else return;
 	savePrefs();
@@ -916,6 +932,7 @@ for (const r of document.querySelectorAll('input[name="exag"]')) r.addEventListe
 for (const r of document.querySelectorAll('input[name="theme"]')) r.addEventListener('change', () => setSetting('theme', r.value));
 $('setRange').addEventListener('change', (e) => setSetting('range', e.target.value === 'auto' ? 'auto' : +e.target.value));
 $('setLite').addEventListener('change', (e) => setSetting('lite', e.target.checked));
+$('setSummit').addEventListener('change', (e) => setSetting('summit', e.target.checked));
 
 // ---- Saved areas: "Use it without signal" in the place sheet -------------------------------------------
 // The worker downloads, keeps and deletes them (saved.js); this page shows the list, an estimate of
@@ -1096,6 +1113,7 @@ function aboutUi() {
 	const ms = s.ms || {}, total = ['fetch', 'decode', 'coarse', 'full', 'labels'].reduce((a, k) => a + (+ms[k] || 0), 0);
 	el.textContent = `From ${S.place.name}: terrain from ${from}, ${nf(s.tiles || 0)} tiles, ${((s.bytes || 0) / 1048576).toFixed(1)} MB, out to ${nf(p.rangeKm)} km. `
 		+ `Worked out in ${(total / 1000).toFixed(1)} s (download ${nf(ms.fetch || 0)} ms, decoding ${nf(ms.decode || 0)} ms, first skyline ${nf(ms.coarse || 0)} ms, full panorama ${nf(ms.full || 0)} ms, names ${nf(ms.labels || 0)} ms). `
+		+ (p.summit ? `Looking from the top of ${p.summit.name}, ${nf(p.summit.dist)} m from the place chosen. ` : '')
 		+ `Eye ${nf(p.eye)} m above sea level (the ground there is ${nf(p.ground)} m${aglMetres() ? `, plus ${aglMetres()} m up` : ''}).`;
 }
 
