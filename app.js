@@ -216,7 +216,7 @@ function changeEye() {
 let STALL = 30000; // (the test hook can shorten it)
 function checkStall(now = performance.now()) {
 	const stalled = !!(S.place && worker && !S.ready && !S.readyPending && !S.terrainErr && now - (S.heardAt || now) > STALL);
-	if (stalled !== !!S.stalled) { S.stalled = stalled; cardUi(); }
+	if (stalled !== !!S.stalled) { S.stalled = stalled; cardUi(); if (stalled) tryFollow(); }
 }
 function onWorker(m) {
 	if (!m || typeof m !== 'object') return;
@@ -676,15 +676,24 @@ $('camBtn').addEventListener('click', () => {
 // ---- Position ----------------------------------------------------------------------------------------------------
 // watchPosition with a generation number: choosing a place (a search, a link, the example) moves
 // it on, so a fix that arrives later can't override the choice. The exact fix is used only here.
-// Watching stops once the position in use is within 20 m, or after a minute ("Use my location"
-// re-arms it); a slow first fix (the watch's own 15 s timeout) doesn't end it sooner.
+// While "Your location" is the place in use and the page is on screen, the watch keeps running and
+// the view follows you (followFix); it stops while the page is hidden and starts again when it is
+// back. With no fix at all after a minute it gives up; a slow first fix (the watch's own 15 s
+// timeout) doesn't end it sooner. (Until 2026-11-07 the watch stopped for good at a ±20 m fix or after
+// a minute, so on a walk or in a car the view stayed where the first fix was, Adam's report.)
 let locGen = 0, watchId = null, watchTimer = 0, gpsWanted = false;
+// Following: a move is worked out once the view from the last place is drawn (or has failed or
+// stalled) and FOLLOW ms after the last move, so in a car the runs don't cancel each other before
+// they finish; the latest fix waits meanwhile. A move keeps the way the view looks and what is
+// selected. (The test hook can shorten FOLLOW.)
+let FOLLOW = 10000, followAt = 0, followTimer = 0, pendingFix = null;
 const IOS_APP = (/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
 	&& (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches);
 function stopGps() {
 	if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
 	watchId = null;
 	clearTimeout(watchTimer);
+	clearTimeout(followTimer); pendingFix = null;
 }
 function startGps() {
 	if (!navigator.geolocation) { toast('Location isn’t available here: search for a place instead'); openSheet($('placeSheet')); return; }
@@ -694,34 +703,55 @@ function startGps() {
 	if (!S.place || S.place.source !== 'gps') { $('placeName').textContent = 'Finding your position…'; $('placeAcc').hidden = true; }
 	watchId = navigator.geolocation.watchPosition((pos) => onFix(pos, gen), (err) => onGpsError(err, gen), { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 });
 	watchTimer = setTimeout(() => {
-		if (gen !== locGen) return;
-		const none = !S.place || S.place.source !== 'gps';
+		if (gen !== locGen || (S.place && S.place.source === 'gps')) return;   // a fix came: keep following
 		stopGps(); gpsWanted = false;
 		placeUi();
-		if (none) { toast('Couldn’t get your position: search for a place instead'); if (!S.place) openSheet($('placeSheet')); }
+		toast('Couldn’t get your position: search for a place instead');
+		if (!S.place) openSheet($('placeSheet'));
 	}, 60000);
 }
-// A fix. The position in use is replaced (and the view worked out again) when the new fix is
-// somewhere else: further away than the two fixes' uncertainties together (and over 50 m), so a
-// fix wandering about indoors at ±60 m doesn't redo the view every few seconds. A more accurate
-// fix is always taken, position and accuracy together (never the accuracy alone, which showed
-// ±5 m beside a position from a ±25 m fix 40 m away); the view is worked out again when it moved
-// the position by more than 15 m and twice its own accuracy. A less accurate fix near the one in
-// use is ignored.
+// A fix. When it is somewhere else, further away than the two fixes' uncertainties together and
+// over 50 m (so a fix wandering about indoors at ±60 m doesn't redo the view every few seconds),
+// you have moved, and the view follows (followFix). A more accurate fix is always taken, position
+// and accuracy together (never the accuracy alone, which showed ±5 m beside a position from a ±25 m
+// fix 40 m away), at once: the view is worked out again when it moved the position by more than
+// 15 m and twice its own accuracy. A less accurate fix near the one in use is ignored, and so is a
+// move it undoes.
 function onFix(pos, gen) {
 	if (gen !== locGen) return;
 	const { latitude: lat, longitude: lon } = pos.coords, acc = Math.max(1, pos.coords.accuracy || 999);
 	const cur = S.place && S.place.source === 'gps' ? S.place : null;
 	const moved = cur ? km(cur.lat, cur.lon, lat, lon) * 1000 : Infinity;
 	const fix = { name: 'Your location', lat, lon, acc, source: 'gps' };
-	if (!cur || moved > Math.max(50, acc + cur.acc)) {
+	if (!cur) {
+		followAt = performance.now();
 		setPlace(fix);
-		if (acc > 100 && (!cur || cur.acc <= 100)) toast(`Position approximate (±${nf(acc)} m): search for your address for a truer view`, 6000);
-	} else if (acc < cur.acc) {
-		if (moved > Math.max(15, 2 * acc)) setPlace(fix);
+		approxToast(acc, null);
+		return;
+	}
+	if (moved > Math.max(50, acc + cur.acc)) { followFix(fix); return; }
+	pendingFix = null;
+	if (acc < cur.acc) {
+		if (moved > Math.max(15, 2 * acc)) setPlace(fix, true);
 		else { cur.lat = lat; cur.lon = lon; cur.acc = acc; placeUi(); }
 	}
-	if (S.place && S.place.source === 'gps' && S.place.acc < 20) { stopGps(); gpsWanted = false; }
+}
+function approxToast(acc, was) {
+	if (acc > 100 && (!was || was.acc <= 100)) toast(`Position approximate (±${nf(acc)} m): search for your address for a truer view`, 6000);
+}
+function followFix(fix) { pendingFix = fix; tryFollow(); }
+function tryFollow() {
+	clearTimeout(followTimer);
+	if (!pendingFix) return;
+	if (!S.place || S.place.source !== 'gps') { pendingFix = null; return; }
+	if (!S.ready && !S.terrainErr && !S.stalled) return;   // the view still being worked out: its ready calls back
+	const wait = followAt + FOLLOW - performance.now();
+	if (wait > 0) { followTimer = setTimeout(tryFollow, wait); return; }
+	const f = pendingFix, was = S.place;
+	pendingFix = null; followAt = performance.now();
+	S.userMoved = true;   // keep looking the same way (the best way to face is chosen for a first view only)
+	setPlace(f, true);
+	approxToast(f.acc, was);
 }
 function onGpsError(err, gen) {
 	if (gen !== locGen) return;
@@ -733,10 +763,10 @@ function onGpsError(err, gen) {
 	placeUi(); // (not left at "Finding your position…" over a place chosen before)
 	if (!S.place || S.place.source === 'gps') openSheet($('placeSheet'));
 }
-function setPlace(p) {
+function setPlace(p, follow = false) {
 	S.place = p;
 	S.decl = declination(p.lat, p.lon, decimalYear());
-	S.selected = null;
+	if (!follow) S.selected = null;   // (a name gone from the new view just leaves the card)
 	if (p.az != null) { S.az = p.az; S.userMoved = true; } else if (p.source !== 'gps') S.userMoved = false;
 	placeUi();
 	startRun();
@@ -761,7 +791,7 @@ function placeUi() {
 	if (p && p.source === 'gps') acc.textContent = `±${nf(p.acc)} m`;
 	const note = $('gpsNote');
 	note.hidden = !(p && p.source === 'gps');
-	if (p && p.source === 'gps') note.textContent = p.acc > 100 ? `Your position is approximate (±${nf(p.acc)} m). Search for your address for a truer view.` : `Your position, to ±${nf(p.acc)} m. It stays on your phone.`;
+	if (p && p.source === 'gps') note.textContent = p.acc > 100 ? `Your position is approximate (±${nf(p.acc)} m). Search for your address for a truer view.` : `Your position, to ±${nf(p.acc)} m. It follows you as you move, and stays on your phone.`;
 	$('gpsBtn').textContent = p && p.source === 'gps' ? 'Update my position' : 'Use my location';
 }
 addEventListener('hashchange', () => { const p = placeFromLink(); if (p) choosePlace(p); });
@@ -1383,7 +1413,7 @@ function frame(now) {
 		S.dirty = false;
 		draw();
 		drawn = { az: L.az, alt: L.alt || 0, q: L.q };
-		if (S.readyPending && !S.ready) { S.ready = true; aboutUi(); }
+		if (S.readyPending && !S.ready) { S.ready = true; aboutUi(); tryFollow(); }
 	}
 	if (now - lastDom > 100) { lastDom = now; readouts(); }
 }
@@ -1448,7 +1478,7 @@ window.__XRAY = {
 	// whether the compass is steering, and when it last sent a reading (performance.now() ms)
 	get compass() { return { ok: compassOk(), lastReading, quiet: compassQuiet() }; },
 	// shorter waits for the tests: { stall, quiet } in ms
-	setTiming(t) { if (t.stall) STALL = t.stall; if (t.quiet) QUIET = t.quiet; },
+	setTiming(t) { if (t.stall) STALL = t.stall; if (t.quiet) QUIET = t.quiet; if (t.follow) FOLLOW = t.follow; },
 	get camPending() { return camPending; },
 	startCamera, stopCamera,
 	placeFromLink,
