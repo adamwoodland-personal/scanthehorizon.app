@@ -17,7 +17,7 @@
 // known not to work (refused, relative readings only, none at all), switches to dragging. In
 // compass mode a sideways drag lines the drawing up (a nudge added to the heading, as on
 // orrery.live's night sky) rather than taking over. window.__XRAY is a test hook.
-import { OrientationSource, declination, decimalYear } from './orientation.js';
+import { OrientationSource, declination, decimalYear, readScreenAngle } from './orientation.js';
 import { geocode } from './geocode.js';
 import { attachDecodeFallback } from './decode.js';
 import { attitude, fromAttitude, wrap180, wrap360, autoCamFov, screenFov, qRot, DEG } from './attitude.js';
@@ -54,7 +54,7 @@ const DEMO = { name: 'Glass House Mountains Lookout', lat: -26.93153, lon: 152.8
 const PREFS = 'xray-prefs-v2', OLD_PREFS = 'xray-prefs-v1';
 const AGLS = [0, 3, 6, 10, 20, 50, 100, 300], EXAGS = [1, 2, 3, 4], EXAG = 3;
 const SAVE_KMS = [2, 5, 10, 20];
-const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5 };
+const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5, diag: false };
 const readStored = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } };
 function loadPrefs() {
 	const p = { ...DEFAULTS };
@@ -69,6 +69,7 @@ function loadPrefs() {
 	if (['auto', 'light', 'dark'].includes(raw.theme)) p.theme = raw.theme;
 	if (typeof raw.lite === 'boolean') p.lite = raw.lite;
 	if (typeof raw.summit === 'boolean') p.summit = raw.summit;
+	if (typeof raw.diag === 'boolean') p.diag = raw.diag;
 	if (Number.isInteger(raw.detail) && raw.detail >= 0 && raw.detail <= 100) p.detail = raw.detail;
 	if (!old && typeof raw.camLong === 'number' && raw.camLong >= 20 && raw.camLong <= 120) p.camLong = raw.camLong;
 	if (SAVE_KMS.includes(raw.saveKm)) p.saveKm = raw.saveKm;
@@ -141,7 +142,10 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme
 const toastQ = [];
 let toastBusy = false;
 // ms: how long a message stays, for the longer ones (otherwise 3.2 s, or 2 s with more waiting).
-function toast(msg, ms) { toastQ.push({ msg, ms }); if (!toastBusy) nextToast(); }
+function toast(msg, ms) {
+	if ((toastBusy && $('toast').textContent === msg) || toastQ.some((q) => q.msg === msg)) return; // (already showing or waiting)
+	toastQ.push({ msg, ms }); if (!toastBusy) nextToast();
+}
 function nextToast() {
 	const t = $('toast'), item = toastQ.shift();
 	if (!item) { toastBusy = false; t.classList.remove('show'); return; }
@@ -330,7 +334,20 @@ const defaultWidth = () => (portrait() ? 60 : 100);
 // turns, Safari can report those from the old orientation and fire only one resize, and a bottom
 // bar measured where it sat in portrait put the horizon below the screen in landscape (2026-11-03).
 const stageEl = $('stage');
+// After the phone turns, an iPhone (seen in the Home Screen app, 2026-11-08) can leave the page
+// scrolled or the visible area shifted, and then the fixed bars are drawn in one place but answer
+// taps from another: you had to tap above or below a button. The page never scrolls (xray.css pins
+// it), so whenever the sizes are checked, and on any scroll, put it back.
+function settleViewport() {
+	const se = document.scrollingElement, vv = window.visualViewport;
+	if (scrollX || scrollY) scrollTo(0, 0);
+	if (se && (se.scrollTop || se.scrollLeft)) { se.scrollTop = 0; se.scrollLeft = 0; }
+	if (vv && Math.abs(vv.scale - 1) < 0.01 && (Math.abs(vv.offsetTop) > 0.5 || Math.abs(vv.offsetLeft) > 0.5)) scrollTo(0, 0);
+}
+addEventListener('scroll', settleViewport);
+if (window.visualViewport) visualViewport.addEventListener('scroll', settleViewport);
 function resize() {
+	settleViewport();
 	const s = stageEl.getBoundingClientRect(), W = s.width || innerWidth, H = s.height || innerHeight;
 	const top = $('hud').getBoundingClientRect().height, ticksH = 24, ticksTop = H - $('bottom').getBoundingClientRect().height - ticksH;
 	const d = Math.min(devicePixelRatio || 1, 2.5);
@@ -939,6 +956,7 @@ function settingsUi() {
 	$('setRange').value = String(prefs.range);
 	$('setLite').checked = prefs.lite;
 	$('setSummit').checked = prefs.summit;
+	$('setDiag').checked = prefs.diag;
 }
 function setSetting(k, v) {
 	if (k === 'agl') {
@@ -951,6 +969,7 @@ function setSetting(k, v) {
 	else if (k === 'theme' && ['auto', 'light', 'dark'].includes(v)) { prefs.theme = v; applyTheme(); }
 	else if (k === 'lite') { prefs.lite = !!v; startRun(); }
 	else if (k === 'summit') { prefs.summit = !!v; changeEye(); }
+	else if (k === 'diag') { prefs.diag = !!v; diagUi(); }
 	else if (k === 'detail') { setDetail(v); return; }
 	else return;
 	savePrefs();
@@ -963,6 +982,43 @@ for (const r of document.querySelectorAll('input[name="theme"]')) r.addEventList
 $('setRange').addEventListener('change', (e) => setSetting('range', e.target.value === 'auto' ? 'auto' : +e.target.value));
 $('setLite').addEventListener('change', (e) => setSetting('lite', e.target.checked));
 $('setSummit').addEventListener('change', (e) => setSetting('summit', e.target.checked));
+$('setDiag').addEventListener('change', (e) => setSetting('diag', e.target.checked));
+
+// ---- Screen and compass diagnostics (Settings) -----------------------------------------------------
+// For reporting a problem from a phone, in a screenshot: the sizes the page sees, where the last tap
+// landed (a ring there, and what it reached), and what the compass is doing. Off unless chosen.
+let lastTap = null, diagTimer = 0;
+addEventListener('pointerdown', (e) => {
+	if (!prefs.diag) return;
+	const el = e.target && e.target.closest ? e.target.closest('[id]') : null;
+	lastTap = { x: e.clientX, y: e.clientY, target: el ? '#' + el.id : String(e.target && e.target.nodeName).toLowerCase() };
+	const d = $('diagDot');
+	d.style.left = `${e.clientX}px`; d.style.top = `${e.clientY}px`; d.hidden = false;
+	diagTick();
+}, true);
+function diagText() {
+	const vv = window.visualViewport, sa = getComputedStyle($('saProbe')), hud = $('hud').getBoundingClientRect(), bot = $('bottom').getBoundingClientRect();
+	const r = (x) => (Number.isFinite(x) ? String(Math.round(x * 10) / 10) : '–'), sg = (x) => (Number.isFinite(x) ? `${x < 0 ? '−' : '+'}${r(Math.abs(x))}` : '–');
+	const cal = src.calibrator;
+	return [
+		`window ${innerWidth}×${innerHeight} · screen turned ${readScreenAngle()}° · ${portrait() ? 'portrait' : 'landscape'}`,
+		(vv ? `visible ${r(vv.width)}×${r(vv.height)} at ${r(vv.offsetLeft)},${r(vv.offsetTop)} · zoom ×${vv.scale.toFixed(2)} · ` : '') + `scrolled ${r(scrollX)},${r(scrollY)}`,
+		`safe area: top ${r(parseFloat(sa.paddingTop))} right ${r(parseFloat(sa.paddingRight))} bottom ${r(parseFloat(sa.paddingBottom))} left ${r(parseFloat(sa.paddingLeft))}`,
+		`top bar ${r(hud.left)},${r(hud.top)}–${r(hud.right)},${r(hud.bottom)} · bottom bar ${r(bot.top)}–${r(bot.bottom)}`,
+		lastTap ? `last tap ${r(lastTap.x)},${r(lastTap.y)} reached ${lastTap.target}` : 'last tap: none yet (tap anywhere)',
+		`compass ${src.status}${src.calibrating ? ', settling' : ''} · ${S.aim === 'compass' ? 'following the phone' : 'dragging'} · facing ${r(S.look.az)}°`,
+		cal.ready ? `iPhone heading correction ${sg(cal.offset)}°, from the ${cal.used === 'camera' ? 'back camera' : 'top edge'}'s heading · accuracy ${src.accuracy == null ? '–' : src.accuracy + '°'}` : 'no iPhone heading correction (Android, a computer, or not settled)',
+		`true north = magnetic ${sg(S.decl)}° · lined up by ${sg(S.nudge)}°`,
+	].join('\n');
+}
+function diagTick() { if (prefs.diag) $('diag').textContent = diagText(); }
+function diagUi() {
+	$('diag').hidden = !prefs.diag;
+	if (!prefs.diag) $('diagDot').hidden = true;
+	clearInterval(diagTimer);
+	if (prefs.diag) { diagTick(); diagTimer = setInterval(diagTick, 400); }
+}
+diagUi();
 
 // ---- Saved areas: "Use it without signal" in the place sheet -------------------------------------------
 // The worker downloads, keeps and deletes them (saved.js); this page shows the list, an estimate of

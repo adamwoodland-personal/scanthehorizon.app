@@ -182,7 +182,7 @@
 	</div>
 	<div class="row2">
 		<p id="aimText">…</p>
-		<button id="nudgeChip" class="chip small" type="button" hidden title="Undo the lining up">Lined up by <span id="nudgeVal">0°</span> <span aria-hidden="true">✕</span><span class="sr">(reset)</span></button>
+		<button id="nudgeChip" class="chip small" type="button" hidden title="Undo the lining up">Lined up by <span id="nudgeVal">0°</span><span class="x" aria-hidden="true">✕</span><span class="sr">(reset)</span></button>
 		<button id="modeBtn" class="chip small" type="button" hidden>Drag instead</button>
 	</div>
 	<!-- These float under the bar (xray.css), so showing one never moves the drawing. -->
@@ -222,6 +222,9 @@
 </div>
 
 <p id="toast" role="status" aria-live="polite"></p>
+<p id="diag" aria-hidden="true" hidden></p>
+<div id="diagDot" aria-hidden="true" hidden></div>
+<div id="saProbe" aria-hidden="true"></div>
 <p id="cardSr" class="sr" aria-live="polite"></p>
 
 <dialog id="intro" class="sheet" aria-labelledby="introTitle">
@@ -344,6 +347,7 @@
 			<label><input type="radio" name="theme" value="dark"> Dark</label>
 		</fieldset>
 		<label class="check"><input id="setLite" type="checkbox"> Lighter download (less detail close by)</label>
+		<label class="check"><input id="setDiag" type="checkbox"> Show screen and compass diagnostics (for reporting a problem)</label>
 		<p class="small">Settings are kept in this browser only.</p>
 	</div>
 </dialog>
@@ -354,7 +358,7 @@
 		<h2 id="aboutTitle">About Scan the Horizon</h2>
 		<p>Scan the Horizon draws the hills, mountains and coast around you, with the towns, peaks and landmarks named, the way the sign at a lookout does. With a compass the drawing turns as you turn; tap Camera to see it over the live picture.</p>
 		<p>Drawn from elevation data as if trees and buildings were glass: the terrain is the shape of the land, so a place behind a building or a forest still shows. A big place hidden behind a hill gets an arrow over the hill that hides it.</p>
-		<p>Steel and electronics indoors can throw the compass off: drag to line it up. The Detail slider chooses how many names to show.</p>
+		<p>Bearings are from true north: the phone's magnetic compass is corrected for the local difference between the two (about 11° around Brisbane). Steel and electronics indoors, or a car, can still throw the compass off by a few degrees: drag sideways to line the drawing up, and tap “Lined up by” to undo it. The Detail slider chooses how many names to show.</p>
 		<h3 id="faq">Questions</h3>
 		<!-- Keep these word for word the same as the FAQPage JSON-LD in <head> (page-test.js checks). -->
 		<div class="faq">

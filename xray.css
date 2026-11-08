@@ -67,7 +67,11 @@ body.cam dialog {
 * { box-sizing: border-box; }
 /* The hidden attribute always wins, whatever display a class sets. */
 [hidden] { display: none !important; }
-html, body { margin: 0; height: 100%; background: var(--panel); color: var(--ink); font-family: var(--sans); overflow: hidden; overscroll-behavior: none; }
+html, body { margin: 0; height: 100%; background: var(--panel); color: var(--ink); font-family: var(--sans); overflow: hidden; overscroll-behavior: none; touch-action: manipulation; }
+/* The page never scrolls: pinned in place, so an iPhone can't leave it scrolled or shifted after the
+   phone turns (fixed bars were then drawn in one place and answered taps from another, 2026-11-08;
+   app.js settleViewport() puts it back if it happens anyway). No double-tap zoom either. */
+body { position: fixed; inset: 0; }
 body.cam { background: #000; }
 button, select, input, output { font: inherit; color: inherit; }
 a { color: var(--accent); }
@@ -106,7 +110,7 @@ body.cam #centreMark { display: block; }
 /* ---- Top bar ---- */
 #hud {
 	position: fixed; left: 0; right: 0; top: 0; z-index: 5;
-	padding: calc(env(safe-area-inset-top) + 8px) 12px 6px;
+	padding: calc(env(safe-area-inset-top) + 8px) max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
 	background: var(--bar); border-bottom: 1px solid var(--line);
 	backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
@@ -130,6 +134,10 @@ body.cam #notes .note { background: rgba(10, 14, 20, 0.78); }
    inset counts from inside the 1 px border), so the targets are bigger without the bars getting
    taller or the pills wider. */
 .chip::after, .tool::after { content: ""; position: absolute; inset: -6px -4px; }
+/* The chips under the buttons (Lined up by, Drag instead) also take taps from 12 px below, over the
+   top of the drawing: they're only 28 px tall, and "Lined up by" is cleared with a tap anywhere on it. */
+#hud .row2 .chip::after { inset: -4px -5px -12px; }
+#nudgeChip .x { display: inline-block; margin-left: 4px; font-size: 15px; line-height: 1; }
 body.cam .chip, body.cam .tool { background: rgba(10, 14, 20, 0.55); }
 body.cam .tool[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 /* Only the place's name is cut short, so the GPS accuracy after it always shows. */
@@ -149,7 +157,7 @@ body.cam .tool[aria-pressed="true"] { background: var(--accent); color: var(--ac
 /* ---- Bottom: the Detail slider and the card ---- */
 #bottom {
 	position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
-	padding: 6px 12px calc(env(safe-area-inset-bottom) + 10px);
+	padding: 6px max(12px, env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 10px) max(12px, env(safe-area-inset-left));
 	background: var(--bar); border-top: 1px solid var(--line);
 	backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
@@ -263,6 +271,12 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); width
 @media (max-width: 380px) {
 	.tool { padding: 6px 8px; }
 }
+
+/* Screen and compass diagnostics (Settings), for reporting a problem: the numbers, and a ring where
+   the last tap landed as the page saw it. */
+#diag { position: fixed; z-index: 7; left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); top: 45%; margin: 0; padding: 6px 8px; border-radius: 8px; background: rgba(0, 0, 0, 0.78); color: #e9f2ff; font: 11px/1.4 var(--mono); white-space: pre-wrap; pointer-events: none; }
+#diagDot { position: fixed; z-index: 8; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; border: 2px solid #ff3d7f; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.5); pointer-events: none; }
+#saProbe { position: fixed; visibility: hidden; pointer-events: none; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 
 @media (prefers-reduced-motion: reduce) {
 	#toast, #cam, #progressBar { transition: none; }

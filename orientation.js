@@ -1,5 +1,8 @@
 // COPY of orrery.live/night-sky/orientation.js (2026-10-29) for Through the Earth: the two sites
 // are separate origins, so it can't be imported from there. Keep the two in step.
+// ⚠ This copy (scanthehorizon.app) is AHEAD of the other two since 2026-11-08: its
+// HeadingCalibrator accepts either iOS heading convention on a phone on its side, and re-seeds
+// only after a break in the readings (see the calibrator's notes). Port it before syncing copies.
 //
 // Phone orientation for the /night-sky/ AR view: turns DeviceOrientation readings into a
 // three.js camera quaternion so whatever the back of the phone points at is in the middle
@@ -184,9 +187,22 @@ export function readScreenAngle(win = (typeof window !== 'undefined' ? window : 
 // comparison are in the device frame. Also skipped: samples taken while the phone turns
 // faster than maxRate (the compass lags the gyro), an uncalibrated compass
 // (webkitCompassAccuracy < 0) or a poor one (> maxAccuracy degrees), and — once ready —
-// samples more than `outlier` degrees from the estimate (magnetic disturbance). A run of
-// `resetAfter` rejected samples that agree with each other re-seeds the estimate, in case
-// iOS re-zeroed alpha.
+// samples more than `outlier` degrees from the estimate (magnetic disturbance).
+//
+// A phone on its side and upright (landscape, camera at the horizon) has both its top edge and its
+// back camera level, and iOS may report the heading of either: a phone in a car holder held the
+// top edge's while the car stood at the lights and turned 90° (left or right, by which way it was
+// turned) a second after moving off (2026-11-08). So once ready, in that pose the camera's heading
+// is tried as well, and whichever agrees with the estimate is used: a change of convention changes
+// nothing.
+//
+// A run of `resetAfter` rejected samples that agree with each other re-seeds the estimate, for when
+// iOS re-zeroes alpha. That only happens with a break in the readings, so the quick re-seed is
+// allowed only within `breakWindow` ms of one: a pause of half a second or more (the page away,
+// the sensors restarted) or the attitude leaping further between two readings than a hand can turn
+// a phone (`leap` degrees in under 0.1 s). At any other time the run must last `patience` ms. (It
+// used to be any 45 samples, so a magnetic disturbance lasting a second, say a car pulling away,
+// moved the whole view.)
 //
 // The estimate is a circular mean of the per-sample offsets, weighted by 1/accuracy², with
 // exponential forgetting over ~`memory` samples so it follows slow gyro drift (5 s at 60 Hz).
@@ -198,6 +214,9 @@ export class HeadingCalibrator {
 		this.outlier = opts.outlier ?? 20;     // degrees
 		this.resetAfter = opts.resetAfter ?? 45;
 		this.memory = opts.memory ?? 300;      // samples
+		this.leap = opts.leap ?? 25;           // degrees between two readings
+		this.breakWindow = opts.breakWindow ?? 10000; // ms
+		this.patience = opts.patience ?? 60000;       // ms
 		this.reset();
 	}
 
@@ -206,9 +225,11 @@ export class HeadingCalibrator {
 		this._seed = [];
 		this._rejects = [];
 		this._prev = null;
+		this._breakAt = -Infinity;
 		this._ready = false;
 		this.accuracy = null;
 		this.accepted = 0;
+		this.used = null;          // which heading iOS gave in the last sample used: 'top' (edge) or 'camera'
 	}
 
 	get ready() { return this._ready; }
@@ -225,25 +246,41 @@ export class HeadingCalibrator {
 		return null;
 	}
 
+	// The back camera's heading where iOS might report it instead of the top edge's: both level to
+	// within 30° (a phone on its side, upright); null elsewhere.
+	static cameraHeading(alpha, beta, gamma) {
+		const R = rotMatrix(alpha, beta, gamma);
+		if (Math.abs(R[7]) <= 0.5 && Math.abs(R[8]) <= 0.5) return wrap360(Math.atan2(-R[2], -R[5]) / DEG);
+		return null;
+	}
+
 	// Feed one reading. screenAngleDeg is accepted for symmetry with the other calls but not
 	// needed (see above). tMs defaults to now. Returns true if the sample was used.
 	ingest(alpha, beta, gamma, screenAngleDeg, compassHeading, compassAccuracy, tMs) {
 		if (!finite(alpha, beta, gamma, compassHeading) || compassHeading < 0 || compassHeading > 360) return false;
 		const t = finite(tMs) ? tMs : nowMs();
-		// Turn rate since the previous reading (whether or not that one was used).
+		// Turn rate since the previous reading (whether or not that one was used), and breaks.
 		const q = deviceToEnuQuat(alpha, beta, gamma), prev = this._prev;
 		this._prev = { q, t };
 		if (prev) {
-			const dt = (t - prev.t) / 1000;
-			if (dt > 0 && dt < 0.5 && qAngle(prev.q, q) / dt > this.maxRate) return false;
+			const dt = (t - prev.t) / 1000, turned = qAngle(prev.q, q);
+			if (dt >= 0.5 || (dt < 0.1 && turned > this.leap)) this._breakAt = t;
+			if (dt > 0 && dt < 0.5 && turned / dt > this.maxRate) return false;
 		}
 		let acc = finite(compassAccuracy) ? compassAccuracy : null;
 		if (acc !== null && (acc < 0 || acc > this.maxAccuracy)) return false;
 		const model = HeadingCalibrator.modelHeading(alpha, beta, gamma);
-		if (model === null) return false;
-		const sample = wrap180(compassHeading - model);
+		const cam = this._ready ? HeadingCalibrator.cameraHeading(alpha, beta, gamma) : null;
+		if (model === null && cam === null) return false;
 		if (acc === null) acc = 15;
 		const w = 1 / Math.max(acc, 5) ** 2;
+		// The sample from the usual convention; once ready, the camera's instead if it agrees better.
+		let sample = model === null ? null : wrap180(compassHeading - model), kind = 'top';
+		if (cam !== null) {
+			const alt = wrap180(compassHeading - cam);
+			if (sample === null || Math.abs(wrap180(alt - this.offset)) < Math.abs(wrap180(sample - this.offset))) { sample = alt; kind = 'camera'; }
+		}
+		if (kind === 'top' && rotMatrix(alpha, beta, gamma)[7] >= 0.9) kind = 'camera'; // (upright in portrait the usual one is the camera's)
 
 		if (!this._ready) {
 			// Seed: wait for minSamples, then keep those near their circular mean.
@@ -257,11 +294,15 @@ export class HeadingCalibrator {
 			return true;
 		}
 		if (Math.abs(wrap180(sample - this.offset)) > this.outlier) {
-			this._rejects.push({ d: sample, w, acc });
+			// Only samples from the usual convention count towards a re-seed (a camera heading that
+			// agrees with nothing is just the wrong guess for this pose).
+			if (model === null) return false;
+			this._rejects.push({ d: wrap180(compassHeading - model), w, acc, t });
 			if (this._rejects.length >= this.resetAfter) {
 				const m = circMean(this._rejects);
-				if (this._rejects.every((s) => Math.abs(wrap180(s.d - m)) <= 5)) this._start(this._rejects);
-				else this._rejects.shift();
+				if (!this._rejects.every((s) => Math.abs(wrap180(s.d - m)) <= 5)) this._rejects.shift();
+				else if (t - this._breakAt <= this.breakWindow || t - this._rejects[0].t >= this.patience) this._start(this._rejects);
+				else if (this._rejects.length > 6000) this._rejects.splice(0, 1000); // (a long run: keep memory bounded)
 			}
 			return false;
 		}
@@ -272,6 +313,7 @@ export class HeadingCalibrator {
 		this._w = this._w * keep + w;
 		this.accuracy = acc;
 		this.accepted++;
+		this.used = kind;
 		return true;
 	}
 
