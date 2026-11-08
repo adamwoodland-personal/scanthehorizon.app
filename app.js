@@ -20,7 +20,7 @@
 import { OrientationSource, declination, decimalYear, readScreenAngle } from './orientation.js';
 import { geocode } from './geocode.js';
 import { attachDecodeFallback } from './decode.js';
-import { parseSaveLink, covers, boxSize, MAX_RADIUS_KM, MAX_SIDE_KM } from './saved.js';
+import { parseSaveLink, covers, boxSize, cleanName, MAX_RADIUS_KM, MAX_SIDE_KM } from './saved.js';
 import { attitude, fromAttitude, wrap180, wrap360, autoCamFov, screenFov, qRot, DEG } from './attitude.js';
 import {
 	readTheme, detailParams, allowed, stopName, signProjection, cameraProjection, drawTerrain, drawTicks,
@@ -104,7 +104,13 @@ function placeFromLink(hash = location.hash) {
 	const name = (q.get('name') || '').trim().slice(0, 60);
 	const azs = (q.get('az') || '').trim();
 	const az = NUM.test(azs) && Number(azs) >= 0 && Number(azs) <= 360 ? Number(azs) % 360 : null;
-	return { name: name || `${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon, source: 'link', az };
+	// So a street address never travels with coordinates rounded to hide it: an exact link to an address
+	// carries its suburb or town as in= (a rounded link made from it names only that), and the name of any
+	// other place from a link finer than a rounded one (more than two decimals: an exact link from before
+	// in= existed, or someone else's) is left out of rounded links (linkFor).
+	const fine = parts.some((v) => (v.split('.')[1] || '').length > 2);
+	const inq = q.has('in') ? cleanName(q.get('in')) : null;
+	return { name: name || `${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon, source: 'link', az, address: inq !== null, locality: inq || '', fine };
 }
 
 // ---- State ---------------------------------------------------------------------------------------------
@@ -885,7 +891,9 @@ function begin() {
 }
 const leaveIntro = () => { closeSheet($('intro')); $('placeBtn').focus(); };
 $('startGps').addEventListener('click', () => { begin(); startGps(); leaveIntro(); });
-$('startLink').addEventListener('click', () => { begin(); leaveIntro(); });
+// A place from a save link is only looked from once asked to (no terrain is downloaded before that).
+let pendingLink = null;
+$('startLink').addEventListener('click', () => { begin(); if (pendingLink) { const p = pendingLink; pendingLink = null; choosePlace(p); } leaveIntro(); });
 $('startSearch').addEventListener('click', () => { begin(); leaveIntro(); openSheet($('placeSheet')); $('placeInput').focus(); });
 $('startDemo').addEventListener('click', () => { begin(); choosePlace({ ...DEMO }); leaveIntro(); });
 
@@ -941,9 +949,10 @@ function linkFor(exact) {
 	const p = S.place;
 	if (!p) return null;
 	const d = exact ? 5 : 2, f = (v) => String(+v.toFixed(d));
-	const label = p.source === 'gps' ? '' : p.address && !exact ? (p.locality || '') : p.name;
+	const label = p.source === 'gps' ? '' : exact ? p.name : p.address ? (p.locality || '') : p.source === 'link' && p.fine ? '' : p.name;
 	const name = label ? `&name=${encodeURIComponent(label)}` : '';
-	return `${location.origin}${location.pathname}#at=${f(p.lat)},${f(p.lon)}${name}&az=${Math.round(wrap360(S.look.az)) % 360}`;
+	const within = exact && p.address ? `&in=${encodeURIComponent(p.locality || '')}` : '';
+	return `${location.origin}${location.pathname}#at=${f(p.lat)},${f(p.lon)}${name}${within}&az=${Math.round(wrap360(S.look.az)) % 360}`;
 }
 async function copyLink(exact) {
 	const url = linkFor(exact), st = $('linkStatus');
@@ -1154,6 +1163,9 @@ function openAsk(s) {
 		toWorker({ type: 'areas' });
 		toWorker({ type: 'estimate', key: ASK.key, ...askArea(s), rangeKm: prefs.range });
 		toWorker({ type: 'describe', key: ASK.key, ...askArea(s) });
+		// (should no answer come, the area is worded by its coordinates)
+		const k = ASK.key;
+		setTimeout(() => { if (ASK.key === k && !ASK.desc) { ASK.desc = { near: null, towns: [], cc: null }; askUi(); } }, 20000);
 	}
 	askUi();
 	if (!$('saveAsk').open) openSheet($('saveAsk'));
@@ -1183,13 +1195,15 @@ function askDone() {
 	ASK.spec = null; ASK.key = '';
 	closeSheet($('saveAsk'));
 	const at = s && !s.error ? { name: askLabel(s, d), lat: s.lat, lon: s.lon, source: 'link' } : null;
-	try { history.replaceState(null, '', location.pathname + location.search + (at ? `#at=${+at.lat.toFixed(5)},${+at.lon.toFixed(5)}&name=${encodeURIComponent(at.name)}` : '')); } catch (err) { /* sandboxed */ }
+	// (rounded, as links are: the middle of someone else's area, to look from)
+	try { history.replaceState(null, '', location.pathname + location.search + (at ? `#at=${+at.lat.toFixed(2)},${+at.lon.toFixed(2)}&name=${encodeURIComponent(at.name)}` : '')); } catch (err) { /* sandboxed */ }
 	return { s, at, e };
 }
 $('saveAskGo').addEventListener('click', () => {
 	const { s, at } = askDone();
 	if (!s || s.error) return;
 	if (!S.started) begin();
+	pendingLink = null;
 	if (!S.place || S.place.lat !== at.lat || S.place.lon !== at.lon) choosePlace(at); else { S.place.name = at.name; placeUi(); }
 	$('startLinkName').textContent = at.name;
 	saveArea({ id: 'a' + Date.now().toString(36), name: at.name, lat: s.lat, lon: s.lon, radiusKm: s.radiusKm || null, box: s.box || null, range: prefs.range });
@@ -1198,7 +1212,7 @@ $('saveAskGo').addEventListener('click', () => {
 });
 $('saveAskNo').addEventListener('click', () => {
 	const { at } = askDone();
-	if (at) { if (!S.place) setPlace(at); $('startLinkName').textContent = at.name; }
+	if (at && !S.started) { pendingLink = at; $('startLink').hidden = false; $('startLinkName').textContent = at.name; }
 	if (!S.started) openSheet($('intro'));
 });
 $('saveAsk').addEventListener('cancel', (e) => { e.preventDefault(); $('saveAskNo').click(); }); // Escape is "Not now"
@@ -1609,7 +1623,9 @@ const askLink = parseSaveLink(location.hash);
 		$('startLink').hidden = false;
 		$('startLinkName').textContent = link.name;
 		$('startDemo').hidden = true;
-		setPlace(link); // the drawing gets going behind the start screen
+		// A link to a view: the drawing gets going behind the start screen. A link offering to save an
+		// area: nothing until the dialog is answered (its terrain isn't fetched without a yes).
+		if (askLink) pendingLink = link; else setPlace(link);
 	} else if (prefs.place) {
 		$('startLink').hidden = false;
 		$('startLinkName').textContent = prefs.place.name;

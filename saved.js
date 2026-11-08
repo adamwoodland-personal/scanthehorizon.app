@@ -92,15 +92,16 @@ export function detailAt(areas, lat, lon) {
 	return best;
 }
 
-// The Mapterhorn tiles for looking from anywhere in an area, coarsest first.
-// opts: { radiusKm } or { box }, ranges (the ranges a view there may use, km), detail. → [{ z, x, y, url }]
-export function areaTiles(lat, lon, { radiusKm, box = null, ranges, detail = 'full' }) {
-	const src = D.SOURCES.mapterhorn, out = new Map();
+// The tiles for looking from anywhere in an area, coarsest first: Mapterhorn's, or AWS's for a browser
+// that can't decode WebP (the engine then draws everything from AWS, so that is what it needs offline).
+// opts: { radiusKm } or { box }, ranges (the ranges a view there may use, km), detail, source. → [{ z, x, y, url }]
+export function areaTiles(lat, lon, { radiusKm, box = null, ranges, detail = 'full', source = 'mapterhorn' }) {
+	const src = D.SOURCES[source === 'aws' ? 'aws' : 'mapterhorn'], out = new Map();
 	const [s, w, n, e] = box || boundsOf(lat, lon, radiusKm);
 	const lats = [Math.max(-85, s), Math.min(85, n), lat];
 	for (let x = Math.ceil(s * 2) / 2; x < n; x += 0.5) lats.push(x);
 	const plans = detail === 'full' ? [{ lite: false }, { lite: true }] : [{ lite: true, ladder: detail === 'basic' ? D.BASIC_LADDER : D.LADDER }];
-	const add = (z, x, y) => { const k = D.tileKey('mapterhorn', z, x, y); if (!out.has(k)) out.set(k, { z, x, y, url: D.tileUrl(src, z, x, y) }); };
+	const add = (z, x, y) => { const k = D.tileKey(src.id, z, x, y); if (!out.has(k)) out.set(k, { z, x, y, url: D.tileUrl(src, z, x, y) }); };
 	for (const la of lats) for (const rangeKm of ranges) for (const pl of plans) {
 		for (const R of D.planRings(la, lon, rangeKm, { ...pl, src })) {
 			if (!box) {
@@ -109,7 +110,7 @@ export function areaTiles(lat, lon, { radiusKm, box = null, ranges, detail = 'fu
 				continue;
 			}
 			// The box grown by the ring's reach (and the bilinear pad makeRing adds), corners and all.
-			const z = R.zM, N = 2 ** z, E = R.outerKm + Math.max(0.5, 3 * D.mppAt(z, la) / 1000);
+			const z = R.z, N = 2 ** z, E = R.outerKm + Math.max(0.5, 3 * D.mppAt(z, la, src.size) / 1000);
 			const dLat = E / KM_DEG, dLon = E / (KM_DEG * Math.max(0.02, Math.cos(Math.min(85, Math.max(Math.abs(s), Math.abs(n)) + dLat) * D2R)));
 			const x0 = Math.floor(D.lonToU(w - dLon) * N), x1 = Math.floor(D.lonToU(e + dLon) * N);
 			const y0 = Math.max(0, Math.floor(D.latToV(n + dLat) * N)), y1 = Math.min(N - 1, Math.floor(D.latToV(s - dLat) * N));
@@ -181,6 +182,7 @@ function cleanArea(a) {
 		detail: DETAILS.includes(a.detail) ? a.detail : 'full',
 		// (less: whether that is less than a view online would have there; xray-worker.js fineDataIn)
 		less: typeof a.less === 'boolean' ? a.less : DETAILS.includes(a.detail) && a.detail !== 'full',
+		source: a.source === 'aws' ? 'aws' : 'mapterhorn',
 		range: a.range === 'auto' || (Number.isFinite(a.range) && a.range >= 10 && a.range <= 300) ? a.range : 'auto',
 		savedAt: Number.isFinite(a.savedAt) ? a.savedAt : 0, status: a.status === 'saved' ? 'saved' : 'saving',
 		urls: a.urls, bytes: Number.isFinite(a.bytes) && a.bytes >= 0 ? a.bytes : 0, missing: Number.isInteger(a.missing) && a.missing >= 0 ? a.missing : 0,
@@ -192,7 +194,7 @@ export function cleanManifest(raw) {
 	return { v: 1, areas: areas.filter((a) => !seen.has(a.id) && seen.add(a.id)).slice(0, MAX_AREAS) };
 }
 // What the page is told about an area (not its URL list).
-export const summary = (a) => ({ id: a.id, name: a.name, lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: a.detail, less: a.less, range: a.range, savedAt: a.savedAt, status: a.status, bytes: a.bytes, missing: a.missing, pieces: a.urls.length });
+export const summary = (a) => ({ id: a.id, name: a.name, lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: a.detail, less: a.less, source: a.source, range: a.range, savedAt: a.savedAt, status: a.status, bytes: a.bytes, missing: a.missing, pieces: a.urls.length });
 const urlsOf = (m) => new Set(m.areas.flatMap((a) => a.urls));
 
 // ---- The store ------------------------------------------------------------------------------------
@@ -200,9 +202,31 @@ const urlsOf = (m) => new Set(m.areas.flatMap((a) => a.urls));
 // skip the cache for anything not saved; refresh() reads it again (the worker does at each run, in
 // case another tab saved or deleted an area). Every Cache API call is guarded: a private window can
 // refuse storage, and the page must work without it.
+//
+// Tabs. Each tab's worker has its own SavedStore on the one cache, so every read–change–write of the
+// manifest runs under the Web Lock MANIFEST_LOCK (two tabs used to read the same list and the second
+// write dropped the first's area, whose pieces the next sweep then deleted). A save holds BUSY_LOCK
+// shared for as long as it runs; a sweep runs only when it can take BUSY_LOCK exclusively at once, as it
+// would otherwise delete the AWS stand-ins a save in another tab has downloaded but not listed yet
+// (they are listed at its end). Without Web Locks (Node, very old browsers) it all runs unlocked.
+export const MANIFEST_LOCK = 'xray-saved-manifest', BUSY_LOCK = 'xray-saved-busy';
+function defaultLocks() {
+	try { return typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function' ? navigator.locks : null; } catch (e) { return null; }
+}
 export class SavedStore {
-	constructor({ caches = null, name = SAVED_CACHE } = {}) {
+	constructor({ caches = null, name = SAVED_CACHE, locks } = {}) {
 		this.caches = caches; this.name = name; this.cacheP = null; this.urls = new Set(); this.areas = [];
+		this.locks = locks !== undefined ? locks : defaultLocks();
+	}
+	lock(name, opts, fn) { return this.locks ? this.locks.request(name, opts, fn) : fn({ name }); }
+	// Hold BUSY_LOCK shared until the function returned is called (a save: no tab sweeps meanwhile).
+	async holdBusy() {
+		if (!this.locks) return () => {};
+		let release = () => {};
+		const held = new Promise((ok) => { release = ok; });
+		try { await new Promise((ok, no) => { this.locks.request(BUSY_LOCK, { mode: 'shared' }, () => { ok(); return held; }).catch(no); }); }
+		catch (e) { return () => {}; } // (no lock to be had: carry on unlocked)
+		return release;
 	}
 	cache() {
 		if (!this.caches) return Promise.resolve(null);
@@ -220,8 +244,9 @@ export class SavedStore {
 		await c.put(MANIFEST_KEY, new Response(JSON.stringify(m), { headers: { 'content-type': 'application/json' } }));
 		this.urls = urlsOf(m); this.areas = m.areas;
 	}
-	// Read, change and write the manifest (read fresh each time: another tab may have changed it).
-	async update(fn) { const m = await this.read(); fn(m); await this.write(m); return m; }
+	// Read, change and write the manifest, under the lock (read fresh each time: another tab may have
+	// changed it).
+	update(fn) { return this.lock(MANIFEST_LOCK, {}, async () => { const m = await this.read(); fn(m); await this.write(m); return m; }); }
 	async refresh() { const m = await this.read(); this.urls = urlsOf(m); this.areas = m.areas; return this.urls; }
 	// The finest detail an area saved here holds at (lat, lon), or null (as of the last read).
 	detailAt(lat, lon) { return detailAt(this.areas, lat, lon); }
@@ -233,28 +258,34 @@ export class SavedStore {
 		try { return (await c.match(url)) || null; } catch (e) { return null; }
 	}
 	// Forget an area, deleting what only it used before the manifest is written, so a full store has
-	// room for the write.
-	async remove(id) {
+	// room for the write; also: more URLs to delete if nothing lists them (a failed save's AWS stand-ins,
+	// which no sweep can take while that save holds BUSY_LOCK). Under the lock.
+	async remove(id, also = []) {
 		const c = await this.cache();
 		if (!c) return;
-		const m = await this.read(), gone = m.areas.find((a) => a.id === id);
-		m.areas = m.areas.filter((a) => a.id !== id);
-		const others = urlsOf(m);
-		if (gone) for (const u of gone.urls) if (!others.has(u)) { try { await c.delete(u); } catch (e) { /* ignore */ } }
-		await this.write(m);
+		await this.lock(MANIFEST_LOCK, {}, async () => {
+			const m = await this.read(), gone = m.areas.find((a) => a.id === id);
+			m.areas = m.areas.filter((a) => a.id !== id);
+			const others = urlsOf(m), victims = new Set([...(gone ? gone.urls : []), ...also]);
+			for (const u of victims) if (!others.has(u)) { try { await c.delete(u); } catch (e) { /* ignore */ } }
+			await this.write(m);
+		});
 	}
-	// Delete everything no area lists. → how many entries went.
+	// Delete everything no area lists, unless a save is running in this or another tab. → how many went.
 	async sweep() {
 		const c = await this.cache();
 		if (!c || typeof c.keys !== 'function') return 0;
-		const keep = urlsOf(await this.read());
-		let n = 0;
-		for (const q of await c.keys()) {
-			const u = typeof q === 'string' ? q : q.url;
-			if (u === MANIFEST_KEY || keep.has(u)) continue;
-			try { if (await c.delete(u)) n++; } catch (e) { /* ignore */ }
-		}
-		this.urls = keep;
-		return n;
+		return this.lock(BUSY_LOCK, { mode: 'exclusive', ifAvailable: true }, async (held) => {
+			if (!held) return 0;   // a save is running: the next sweep tidies up
+			const keep = urlsOf(await this.read());
+			let n = 0;
+			for (const q of await c.keys()) {
+				const u = typeof q === 'string' ? q : q.url;
+				if (u === MANIFEST_KEY || keep.has(u)) continue;
+				try { if (await c.delete(u)) n++; } catch (e) { /* ignore */ }
+			}
+			this.urls = keep;
+			return n;
+		});
 	}
 }

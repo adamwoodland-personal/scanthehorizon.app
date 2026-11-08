@@ -15,7 +15,7 @@
 //    The place search needs a connection anyway.
 //  - On activate, only this site's older caches (names starting 'sth-') are deleted.
 //  - Bump CACHE on every deploy that changes a precached file.
-const CACHE = 'sth-v9';
+const CACHE = 'sth-v10';
 const PLACES = 'sth-places-v1';
 const PLACES_MAX = 300;
 const CORE = [
@@ -97,20 +97,35 @@ async function trim(c) {
 	for (const r of tiles.slice(0, Math.max(0, tiles.length - PLACES_MAX))) await c.delete(r);
 }
 
+// Network first, but not at any cost: a server error (5xx) or no answer within NET_WAIT_MS gives the
+// cached copy instead. (fetch() rejects only when the network fails outright: a 503 from a struggling
+// server used to be passed on even with a good copy here, and a stalled request had no time limit.)
+// With no cached copy, the network's answer is waited for and passed on as it is. A good answer that
+// arrives late still refreshes the cache.
+const NET_WAIT_MS = 6000;
 async function networkFirst(e, req) {
-	try {
-		const res = await fetch(req);
-		if (res.ok) {
-			const copy = res.clone();
-			e.waitUntil(caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {}));
-		}
-		return res;
-	} catch (err) {
-		const c = await caches.open(CACHE);
+	const open = caches.open(CACHE);
+	const cached = async () => {
+		const c = await open;
 		// ignoreSearch: a navigation can carry a query; the shell is the same page.
 		const hit = await c.match(req, { ignoreSearch: req.mode === 'navigate' });
 		if (hit) return hit;
-		if (req.mode === 'navigate') { const shell = await c.match('/index.html'); if (shell) return shell; }
-		return Response.error();
+		return req.mode === 'navigate' ? (await c.match('/index.html')) || null : null;
+	};
+	const net = fetch(req);
+	// (the copy is taken before the response is handed on, and the worker kept alive until it is stored)
+	e.waitUntil(net.then((res) => { if (!res.ok) return null; const copy = res.clone(); return open.then((c) => c.put(req, copy)); }).catch(() => {}));
+	let timer = null;
+	const late = new Promise((ok) => { timer = setTimeout(() => ok(null), NET_WAIT_MS); });
+	try {
+		const first = await Promise.race([net, late]);
+		if (first && first.status < 500) return first;      // ok, a redirect or a 4xx: the server's answer
+		const hit = await cached();
+		if (hit) return hit;
+		return first || await net;                           // nothing cached: the network after all
+	} catch (err) {
+		return (await cached()) || Response.error();
+	} finally {
+		clearTimeout(timer);
 	}
 }

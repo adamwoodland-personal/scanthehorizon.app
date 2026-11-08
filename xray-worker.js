@@ -487,6 +487,10 @@ export class Engine {
 	// the place names (never from the link). The 1° tiles it touches, at most 16, nearest its centre
 	// first. → {type:'described', key, near: {name, km} | null, towns: [name], cc}
 	async describe(m) {
+		// (always an answer: the page then words the area by its coordinates)
+		try { await this.describeArea(m); } catch (e) { this.post({ type: 'described', key: m.key, near: null, towns: [], cc: null }); }
+	}
+	async describeArea(m) {
 		const a = areaSpec(m), key = m.key;
 		if (!a || !this.env.placesBase) return this.post({ type: 'described', key, near: null, towns: [], cc: null });
 		// (the town a small circle is named by can be outside it: 25 km round at least)
@@ -496,11 +500,12 @@ export class Engine {
 		const cellOf = (u) => u.match(/(-?\d+)\/(-?\d+)\.json$/).slice(1).map(Number);
 		urls = urls.map((u) => { const [la, lo] = cellOf(u); return { u, d: D.haversine(a.lat, a.lon, la + 0.5, lo + 0.5) }; }).sort((x, y) => x.d - y.d).slice(0, 16).map((x) => x.u);
 		const towns = [];
+		// (each tile has the places deadline, so one that stalls can't hold the answer back)
 		await Promise.all(urls.map(async (u) => {
 			try {
-				const r = await this.placesFetch(u);
+				const r = await D.fetchWithDeadline(this.placesFetch, u, this.deadlines.places);
 				if (!r.ok) return;
-				const j = await r.json();
+				const j = JSON.parse(await r.blob.text());
 				for (const f of (j && j.f) || []) {
 					const [, name, en, la, lo, code, pop, , wl, , cc] = f;
 					// (Most Australian towns are PPLX in GeoNames; a city's districts carry no population here:
@@ -567,16 +572,20 @@ export class Engine {
 			return yes;
 		};
 		const list = [...tiles.entries()];
-		let found = false, i = 0;
-		await Promise.all(Array.from({ length: Math.min(6, list.length) }, async () => {
+		let found = false, i = 0, timer = null;
+		const all = Promise.all(Array.from({ length: Math.min(6, list.length) }, async () => {
 			while (!found && i < list.length) if (await ask(list[i++])) found = true;
 		}));
+		// (10 s at most in all, so the estimate isn't held up: unsure, it says "less detail")
+		await Promise.race([all, new Promise((ok) => { timer = setTimeout(() => { found = true; ok(); }, 10000); })]);
+		clearTimeout(timer);
 		return found;
 	}
 	// Whether an area keeps less detail close by than a view there online would have.
-	async lessDetail(a, detail) {
+	async lessDetail(a, detail, source = 'mapterhorn') {
 		if (detail === 'basic') return true;
-		return detail === 'lite' ? this.fineDataIn(a) : false;
+		// (AWS's first ring is always the lighter one's: its z14 is resampled 30 m data)
+		return detail === 'lite' && source !== 'aws' ? this.fineDataIn(a) : false;
 	}
 	// What saving an area here would download: each tile at what the view on screen paid for it, or
 	// the average for its zoom in that view (else the view's average, else EST_TILE); a tile already
@@ -584,14 +593,15 @@ export class Engine {
 	async estimate(m) {
 		const a = areaSpec(m);
 		if (!a) return;
-		await this.saved.refresh();
-		const { tiles, detail, tooBig } = planArea(a.lat, a.lon, a);
+		const [dec] = await Promise.all([this.ensureDecoder(), this.saved.refresh()]);
+		const source = saveSource(dec);
+		const { tiles, detail, tooBig } = planArea(a.lat, a.lon, { ...a, source });
 		let places = [];
 		try { places = await this.areaPlaceUrls(a); } catch (e) { /* no index to be had: the terrain alone */ }
 		const perZ = new Map();
 		let sum = 0, n = 0;
 		for (const e of this.store.values()) {
-			if (e.src !== 'mapterhorn' || !(e.bytes >= 0) || !e.key) continue;
+			if (e.src !== source || !(e.bytes >= 0) || !e.key) continue;
 			const z = +e.key.split('/')[1], s = perZ.get(z) || [0, 0];
 			s[0] += e.bytes; s[1]++; perZ.set(z, s); sum += e.bytes; n++;
 		}
@@ -599,12 +609,12 @@ export class Engine {
 		let bytes = 0, have = 0;
 		for (const t of tiles) {
 			if (this.saved.urls.has(t.url)) { have++; continue; }
-			const e = this.store.get(D.tileKey('mapterhorn', t.z, t.x, t.y));
-			bytes += e && e.bytes >= 0 ? e.bytes : avg(t.z);
+			const e = this.store.get(D.tileKey(source, t.z, t.x, t.y));
+			bytes += e && e.bytes >= 0 ? e.bytes : avg(t.z) / (source === 'aws' ? 4 : 1);
 		}
 		const pl = this.held && this.held.places, perPlace = pl && pl.tiles ? pl.bytes / pl.tiles : EST_PLACES;
 		for (const u of places) if (!this.saved.urls.has(u)) bytes += perPlace;
-		const less = tooBig ? true : await this.lessDetail(a, detail);
+		const less = tooBig ? true : await this.lessDetail(a, detail, source);
 		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have, detail, less, tooBig });
 	}
 	// Save an area, or finish an unfinished one (the same id again). Each response is taken from this
@@ -620,21 +630,26 @@ export class Engine {
 		const job = this.saving = { id, ac: new AbortController(), stopped: false, deleted: false };
 		const signal = job.ac.signal, store = this.saved;
 		let area = null, isNew = true, urls = new Set(), bytes = 0, missing = 0, done = 0, total = 0;
+		// (shared, for as long as this save runs: no tab sweeps meanwhile; saved.js)
+		const release = await store.holdBusy();
 		try {
 			if (!(await store.cache())) throw sayable('This browser isn’t letting the page keep anything (a private window?).');
 			const mf0 = await store.read(), before = mf0.areas.find((x) => x.id === id);
+			// The tiles the viewer here draws from: AWS's where WebP can't be decoded (else it would be
+			// listed as saved and fail offline). An unfinished area is finished from the source it started with.
+			const source = before ? before.source : saveSource(await this.ensureDecoder());
 			isNew = !before;
 			if (isNew && mf0.areas.length >= MAX_AREAS) throw sayable(`There are already ${MAX_AREAS} saved areas: delete one first.`);
 			// (an unfinished area is finished at the detail it was started with)
-			const pa = before ? { detail: before.detail, tiles: areaTiles(a.lat, a.lon, { ...a, detail: before.detail }), tooBig: false } : planArea(a.lat, a.lon, a);
+			const pa = before ? { detail: before.detail, tiles: areaTiles(a.lat, a.lon, { ...a, detail: before.detail, source }), tooBig: false } : planArea(a.lat, a.lon, { ...a, source });
 			if (pa.tooBig) throw sayable('This area is too big to save in one go: choose a smaller one.');
 			const tiles = pa.tiles;
-			const less = before && typeof before.less === 'boolean' ? before.less : await this.lessDetail(a, pa.detail);
+			const less = before && typeof before.less === 'boolean' ? before.less : await this.lessDetail(a, pa.detail, source);
 			let places;
 			try { places = await this.areaPlaceUrls(a); } catch (e) { throw sayable('The place names couldn’t be reached. Check the connection, then try again.'); }
 			const index = this.env.placesBase ? [new URL('index.json', this.env.placesBase).href] : [];
 			urls = new Set([...(before ? before.urls : []), ...tiles.map((t) => t.url), ...places, ...index]);
-			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: pa.detail, less, range: a.range,
+			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: pa.detail, less, source, range: a.range,
 				savedAt: Date.now(), status: 'saving', urls: [...urls], bytes: 0, missing: 0 };
 			// Listed before the first download, so a page closed half way leaves an unfinished area (to
 			// finish or delete), never tiles that nothing lists.
@@ -662,6 +677,7 @@ export class Engine {
 				catch (err) {
 					if (fatal(err)) throw err;
 					if (++mtFail >= SAVE_GIVE_UP && !mtOk) throw sayable('The elevation data isn’t answering just now. Try again later.');
+					if (source === 'aws') { missing++; return; }
 					// as the engine does online: the four AWS tiles below it, stitched in its place
 					try {
 						for (const u of awsChildren(t)) {
@@ -699,12 +715,14 @@ export class Engine {
 					Object.assign(area, { urls: [...urls], bytes, missing: Math.max(1, total - done) });
 					await store.update((mf) => { mf.areas = mf.areas.filter((x) => x.id !== id).concat(area); });
 				} else if (area) {
-					await store.remove(id);
-					await store.sweep();              // (and any AWS tiles it found it needed, not listed yet)
+					// (and the AWS stand-ins it found it needed, not listed yet: no sweep runs while it holds
+					// the save lock, and once it lets go a sweep in another tab could find them first)
+					await store.remove(id, [...urls]);
 				}
 			} catch (e) { /* storage refused: the next delete sweeps */ }
 			answer({ ok: false, stopped: job.stopped, message });
 		} finally {
+			release();
 			this.saving = null;
 			await this.sendAreas();
 		}
@@ -807,6 +825,8 @@ function areaSpec(m) {
 	return { lat, lon, radiusKm, box: null, ...range };
 }
 const sayable = (message) => Object.assign(new Error(message), { sayable: true });
+// Where a saved area's terrain comes from: as the viewer draws it (run(): AWS when WebP can't be decoded).
+const saveSource = (dec) => (dec && dec.webp === false ? 'aws' : 'mapterhorn');
 // Share of these rings' tiles that hold data.
 function share(rings, store) {
 	let n = 0, ok = 0;
