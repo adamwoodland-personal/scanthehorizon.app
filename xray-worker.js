@@ -77,6 +77,7 @@ export class Engine {
 		this.deadlines = { tile: { ...D.DEADLINES.tile, ...dl.tile }, places: { ...D.DEADLINES.places, ...dl.places } };
 		this.saved = new SavedStore({ caches: env.caches || null });
 		this.saving = null;                 // the save in progress: { id, ac }
+		this.fineSeen = new Map();          // z13 tile URL → whether Mapterhorn has it (fineDataIn)
 		this.fetcher = new D.TileFetcher({ fetch: env.fetch, caches: env.caches || null, deadline: this.deadlines.tile, pinned: this.saved });
 		// Place names: a saved area's copy of a tile first (offline it may be all there is); the index
 		// from the network first (it changes with the data), and the saved copy only if that fails.
@@ -325,6 +326,7 @@ export class Engine {
 			// Inside a saved area, no finer than it holds, so without signal nothing unsaved is asked for
 			// (an area bigger than 20 km keeps less detail close by: saved.js).
 			const areaDetail = this.saved.detailAt(lat, lon);
+			const areaLess = !!areaDetail && areaDetail !== 'full' && this.saved.areas.some((x) => (x.detail || 'full') === areaDetail && x.less !== false && contains(x, lat, lon));
 			const detail = coarserDetail(p.lite ? 'lite' : 'full', areaDetail || 'full');
 			const plan = () => D.planFor(lat, lon, rangeKm, detail, D.SOURCES[srcId]);
 			let rings = plan();
@@ -433,7 +435,7 @@ export class Engine {
 			}
 			if (places) this.labels(full, ms, wall, T0); else this.post({ type: 'labels', gen: this.gen, items: [] });
 			this.post({ type: 'stats', gen: this.gen, ms: roundAll(ms), wall: roundAll(wall), tiles: st.total, bytes: st.bytes, net: st.net, cached: st.cached,
-				awsTiles: st.aws, lifted, source: this.held.src, rangeKm, decoder: dec.mode, failed: fails.length, detail, areaDetail,
+				awsTiles: st.aws, lifted, source: this.held.src, rangeKm, decoder: dec.mode, failed: fails.length, detail, areaDetail, areaLess,
 				rings: rings.map((R) => ({ z: R.z, src: R.src, km: R.outerKm, mpp: Math.round(R.mpp * 10) / 10, tiles: R.tiles.length })),
 				places: places ? { tiles: places.tiles, bytes: places.bytes, records: places.records.length, failed: places.failed.length } : null,
 				labels: this.lastLabelStats || null, memMB: this.memMB() });
@@ -532,6 +534,50 @@ export class Engine {
 		const dir = near && near.km >= 3 ? D.bearing(near.lat, near.lon, a.lat, a.lon) : null;
 		this.post({ type: 'described', key, near: near ? { name: near.name, km: Math.round(near.km), dir } : null, towns: picked.filter((t) => t !== near).map((t) => t.name), cc: cc ? cc[0] : null });
 	}
+	// Does the finest layer (z13, from regional surveys only, such as SE Queensland's LiDAR) exist in this
+	// area? A 'lite' area loses detail close by only where it does: elsewhere an ordinary view falls back
+	// to z12 too (the 404 rule), so the Flinders Ranges lose nothing. Asked with HEAD requests (nothing
+	// downloaded; Mapterhorn answers them with CORS) at the z13 tiles under up to 25 points spread over
+	// the area, a held tile answering for itself. Any answer but a 404 counts as yes, and so does no
+	// answer: better to say "less detail" than not. Answers are remembered for the session.
+	async fineDataIn(a) {
+		const pts = [];
+		if (a.box) {
+			const [s, w, n, e] = a.box;
+			for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) pts.push([s + (n - s) * (i + 0.5) / 5, w + (e - w) * (j + 0.5) / 5]);
+		} else {
+			pts.push([a.lat, a.lon]);
+			for (const [f, k] of [[0.4, 8], [0.8, 16]]) for (let i = 0; i < k; i++) pts.push(D.destination(a.lat, a.lon, i * 360 / k + 10, a.radiusKm * 1000 * f));
+		}
+		const N = 2 ** 13, src = D.SOURCES.mapterhorn, tiles = new Map();
+		for (const [la, lo] of pts) {
+			const x = ((Math.floor(D.lonToU(lo) * N) % N) + N) % N, y = Math.floor(D.latToV(la) * N);
+			tiles.set(D.tileUrl(src, 13, x, y), D.tileKey('mapterhorn', 13, x, y));
+		}
+		const ask = async ([url, key]) => {
+			if (this.fineSeen.has(url)) return this.fineSeen.get(url);
+			const held = this.store.get(key);
+			let yes;
+			if (held && held.src === 'mapterhorn') yes = held.status === 'ok';
+			else {
+				try { yes = (await D.fetchWithDeadline(this.env.fetch, url, { headMs: 5000, maxMs: 6000, init: { ...TILE_INIT, method: 'HEAD' } })).status !== 404; }
+				catch (e) { return true; } // (not remembered: it may answer next time)
+			}
+			this.fineSeen.set(url, yes);
+			return yes;
+		};
+		const list = [...tiles.entries()];
+		let found = false, i = 0;
+		await Promise.all(Array.from({ length: Math.min(6, list.length) }, async () => {
+			while (!found && i < list.length) if (await ask(list[i++])) found = true;
+		}));
+		return found;
+	}
+	// Whether an area keeps less detail close by than a view there online would have.
+	async lessDetail(a, detail) {
+		if (detail === 'basic') return true;
+		return detail === 'lite' ? this.fineDataIn(a) : false;
+	}
 	// What saving an area here would download: each tile at what the view on screen paid for it, or
 	// the average for its zoom in that view (else the view's average, else EST_TILE); a tile already
 	// saved costs nothing. Place-name tiles at the view's average.
@@ -558,7 +604,8 @@ export class Engine {
 		}
 		const pl = this.held && this.held.places, perPlace = pl && pl.tiles ? pl.bytes / pl.tiles : EST_PLACES;
 		for (const u of places) if (!this.saved.urls.has(u)) bytes += perPlace;
-		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have, detail, tooBig });
+		const less = tooBig ? true : await this.lessDetail(a, detail);
+		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have, detail, less, tooBig });
 	}
 	// Save an area, or finish an unfinished one (the same id again). Each response is taken from this
 	// store if it's already there (another area, or an earlier try), else from the terrain cache, else
@@ -582,11 +629,12 @@ export class Engine {
 			const pa = before ? { detail: before.detail, tiles: areaTiles(a.lat, a.lon, { ...a, detail: before.detail }), tooBig: false } : planArea(a.lat, a.lon, a);
 			if (pa.tooBig) throw sayable('This area is too big to save in one go: choose a smaller one.');
 			const tiles = pa.tiles;
+			const less = before && typeof before.less === 'boolean' ? before.less : await this.lessDetail(a, pa.detail);
 			let places;
 			try { places = await this.areaPlaceUrls(a); } catch (e) { throw sayable('The place names couldn’t be reached. Check the connection, then try again.'); }
 			const index = this.env.placesBase ? [new URL('index.json', this.env.placesBase).href] : [];
 			urls = new Set([...(before ? before.urls : []), ...tiles.map((t) => t.url), ...places, ...index]);
-			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: pa.detail, range: a.range,
+			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: pa.detail, less, range: a.range,
 				savedAt: Date.now(), status: 'saving', urls: [...urls], bytes: 0, missing: 0 };
 			// Listed before the first download, so a page closed half way leaves an unfinished area (to
 			// finish or delete), never tiles that nothing lists.

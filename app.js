@@ -1047,7 +1047,8 @@ function areaName(p) {
 const radiusNow = () => +$('saveRadius').value || prefs.saveKm;
 // An area saved for an automatic range serves any range; one saved for a fixed range, that or less.
 const rangeCovered = (a) => a.range === 'auto' || (prefs.range !== 'auto' && prefs.range <= a.range);
-const detailWords = (d) => (d === 'lite' ? ', with a little less detail close by' : d === 'basic' ? ', with less detail close by' : '');
+// Said only where it is so (the worker checks whether finer data exists there: estimate.less).
+const detailWords = (e) => (!e.less ? '' : e.detail === 'basic' ? ', with less detail close by' : ', with a little less detail close by');
 const wifi = (b) => (b > 50 * 1048576 ? ' Best on Wi-Fi.' : '');
 const tens = (v) => nf(Math.max(10, Math.round(v / 10) * 10));
 function areaExtent(a) {
@@ -1169,7 +1170,7 @@ function askUi() {
 	const e = ASK.est, have = e && !e.tooBig && (SV.areas || []).find((a) => a.status === 'saved' && rangeCovered(a) && covers(a, { ...s, detail: e.detail }));
 	$('saveAskSize').hidden = bad;
 	$('saveAskSize').textContent = !e ? 'Working out the size…' : e.tooBig ? 'It is too big to save in one go.' : have ? `It is already saved, as “${have.name}”.`
-		: `About ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e.detail)}.${wifi(e.bytes)}${SV.saving ? ' (Another area is being saved: this can start when it has finished.)' : ''}`;
+		: `About ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e)}.${wifi(e.bytes)}${SV.saving ? ' (Another area is being saved: this can start when it has finished.)' : ''}`;
 	$('saveAskKeep').hidden = bad || !!(e && (e.tooBig || have));
 	$('saveAskIos').hidden = bad || !(IOS_DEVICE && !IOS_APP);
 	$('saveAskGo').hidden = bad;
@@ -1213,7 +1214,7 @@ function savedUi() {
 	$('saveEst').textContent = !p ? 'Choose a place first.' : inside ? `Already saved, as part of “${inside.name}”.`
 		: e ? (e.tooBig ? 'That is too big to save in one go: choose a smaller area.'
 			: e.have >= e.tiles && e.bytes < 1e5 ? 'Already saved.'
-			: `Anywhere within ${r} km of ${where}: about ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e.detail)}.${wifi(e.bytes)}`)
+			: `Anywhere within ${r} km of ${where}: about ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e)}.${wifi(e.bytes)}`)
 		: 'Working out the size…';
 	$('saveProg').hidden = !busy;
 	$('saveText').hidden = !(busy && SV.prog);
@@ -1240,7 +1241,7 @@ function areaItem(a) {
 	n.className = 'rn'; n.textContent = a.name;
 	const when = a.savedAt ? new Date(a.savedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(new Date(a.savedAt).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }) : '';
 	w.className = 'rw';
-	w.textContent = `${areaExtent(a)}${a.detail && a.detail !== 'full' ? ' · less detail close by' : ''} · ` + (a.id === SV.saving ? 'saving…' : a.status === 'saved' ? `${mbText(a.bytes)} · saved ${when}` : `not finished${a.missing ? ` (${a.missing} pieces missing)` : ''}`);
+	w.textContent = `${areaExtent(a)}${a.detail && a.detail !== 'full' && a.less !== false ? ' · less detail close by' : ''} · ` + (a.id === SV.saving ? 'saving…' : a.status === 'saved' ? `${mbText(a.bytes)} · saved ${when}` : `not finished${a.missing ? ` (${a.missing} pieces missing)` : ''}`);
 	go.append(n, w);
 	go.addEventListener('click', () => { closeSheet($('placeSheet')); choosePlace({ name: a.name, lat: a.lat, lon: a.lon, source: 'saved' }); });
 	li.append(go);
@@ -1315,7 +1316,7 @@ function aboutUi() {
 	el.textContent = `From ${S.place.name}: terrain from ${from}, ${nf(s.tiles || 0)} tiles, ${((s.bytes || 0) / 1048576).toFixed(1)} MB, out to ${nf(p.rangeKm)} km. `
 		+ `Worked out in ${(total / 1000).toFixed(1)} s (download ${nf(ms.fetch || 0)} ms, decoding ${nf(ms.decode || 0)} ms, first skyline ${nf(ms.coarse || 0)} ms, full panorama ${nf(ms.full || 0)} ms, names ${nf(ms.labels || 0)} ms). `
 		+ (p.summit ? `Looking from the top of ${p.summit.name}, ${nf(p.summit.dist)} m from the place chosen. ` : '')
-		+ (s.areaDetail && s.areaDetail !== 'full' ? 'Inside a saved area that keeps less detail close by, so the nearest hills come from coarser data. ' : '')
+		+ (s.areaLess ? 'Inside a saved area that keeps less detail close by, so the nearest hills come from coarser data. ' : '')
 		+ `Eye ${nf(p.eye)} m above sea level (the ground there is ${nf(p.ground)} m${aglMetres() ? `, plus ${aglMetres()} m up` : ''}).`;
 }
 

@@ -70,9 +70,11 @@ export function contains(a, lat, lon) {
 	if (a.box) { const [s, w, n, e] = a.box; return lat >= s && lat <= n && lon >= w && lon <= e; }
 	return D.haversine(a.lat, a.lon, lat, lon) <= a.radiusKm * 1000 + 1;
 }
-// Does area a hold everything area b needs: all of b inside a, at no less detail?
+// Does area a hold everything area b needs: all of b inside a, at no less detail? (A 'lite' area where
+// there is no finer data, less: false, is as good as full there.)
 export function covers(a, b) {
-	if (DETAILS.indexOf(a.detail || 'full') > DETAILS.indexOf(b.detail || 'full')) return false;
+	const da = a.detail === 'lite' && a.less === false ? 'full' : a.detail || 'full';
+	if (DETAILS.indexOf(da) > DETAILS.indexOf(b.detail || 'full')) return false;
 	if (a.box) {
 		const [s, w, n, e] = b.box || boundsOf(b.lat, b.lon, b.radiusKm);
 		return s >= a.box[0] && n <= a.box[2] && w >= a.box[1] && e <= a.box[3];
@@ -177,6 +179,8 @@ function cleanArea(a) {
 	return {
 		id: a.id, name: typeof a.name === 'string' && a.name.trim() ? a.name.slice(0, 60) : 'A saved area', lat: a.lat, lon: a.lon, radiusKm: box ? null : a.radiusKm, box,
 		detail: DETAILS.includes(a.detail) ? a.detail : 'full',
+		// (less: whether that is less than a view online would have there; xray-worker.js fineDataIn)
+		less: typeof a.less === 'boolean' ? a.less : DETAILS.includes(a.detail) && a.detail !== 'full',
 		range: a.range === 'auto' || (Number.isFinite(a.range) && a.range >= 10 && a.range <= 300) ? a.range : 'auto',
 		savedAt: Number.isFinite(a.savedAt) ? a.savedAt : 0, status: a.status === 'saved' ? 'saved' : 'saving',
 		urls: a.urls, bytes: Number.isFinite(a.bytes) && a.bytes >= 0 ? a.bytes : 0, missing: Number.isInteger(a.missing) && a.missing >= 0 ? a.missing : 0,
@@ -188,7 +192,7 @@ export function cleanManifest(raw) {
 	return { v: 1, areas: areas.filter((a) => !seen.has(a.id) && seen.add(a.id)).slice(0, MAX_AREAS) };
 }
 // What the page is told about an area (not its URL list).
-export const summary = (a) => ({ id: a.id, name: a.name, lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: a.detail, range: a.range, savedAt: a.savedAt, status: a.status, bytes: a.bytes, missing: a.missing, pieces: a.urls.length });
+export const summary = (a) => ({ id: a.id, name: a.name, lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: a.detail, less: a.less, range: a.range, savedAt: a.savedAt, status: a.status, bytes: a.bytes, missing: a.missing, pieces: a.urls.length });
 const urlsOf = (m) => new Set(m.areas.flatMap((a) => a.urls));
 
 // ---- The store ------------------------------------------------------------------------------------
