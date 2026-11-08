@@ -42,6 +42,9 @@ export const tileUrl = (src, z, x, y) => src.url.replace('{z}', z).replace('{x}'
 // firstMpp / liteMpp: the largest pixel (m) the first ring may have (lite and AWS start one zoom
 // coarser); firstZ / liteZ: the finest zoom it may use.
 export const LADDER = { firstKm: 6, firstZ: 13, liteZ: 12, firstMpp: 10, liteMpp: 20, edges: [11, 23, 45, 90, Infinity], nominal: [11, 23, 45, 90, 180], mrad: 4 };
+// One zoom coarser again close by (z11 at −27°): the plan of a saved area too big for the lighter
+// one (saved.js 'basic'); used with lite.
+export const BASIC_LADDER = { ...LADDER, liteZ: 11, liteMpp: 40 };
 // Resource limits per plan: tiles requested and decoded megabytes held (Int16 for z ≤ 12, Float32
 // finer). The fixtures need at most 60 tiles and 41 MB (Interlaken at 250 km). A plan over either
 // limit is made coarser, the ring holding the most bytes first, until it fits.
@@ -150,6 +153,10 @@ export function planRings(lat, lon, rangeKm, { lite = false, src = SOURCES.mapte
 	}
 	return rings;
 }
+// The plan for a level of detail close by: 'full' (the usual), 'lite' (Lighter download) or 'basic'
+// (saved.js: what a big saved area holds).
+export const planFor = (lat, lon, rangeKm, detail = 'full', src = SOURCES.mapterhorn) =>
+	planRings(lat, lon, rangeKm, { lite: detail !== 'full', src, ladder: detail === 'basic' ? BASIC_LADDER : LADDER });
 // Decoded bytes one ring holds: Int16 for z ≤ 12 (Mapterhorn units), Float32 finer (toStorage).
 export const ringBytes = (R) => R.tiles.length * R.size * R.size * (R.zM >= 13 ? 4 : 2);
 // Tiles and decoded megabytes of a plan, each tile counted once.

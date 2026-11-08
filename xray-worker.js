@@ -11,9 +11,13 @@
 //   {type:'decoded', id, …}    for a worker without OffscreenCanvas (see decode.js).
 //   Saved areas (saved.js; these carry no gen, as they aren't part of a view):
 //   {type:'areas'}             → {type:'areas', areas: [summary], saving: id|null}
-//   {type:'estimate', key, lat, lon, radiusKm, rangeKm}
-//                              → {type:'estimate', key, tiles, places, bytes (to download, estimated), have (tiles already saved)}
-//   {type:'save', id, name, lat, lon, radiusKm, rangeKm}
+//   An area is lat, lon, radiusKm (1–200), or box: [south, west, north, east] (saved.js cleanBox).
+//   {type:'estimate', key, …area, rangeKm}
+//                              → {type:'estimate', key, tiles, places, bytes (to download, estimated), have (tiles already saved),
+//                                 detail ('full' | 'lite' | 'basic': saved.js planArea), tooBig}
+//   {type:'describe', key, …area} → {type:'described', key, near: {name, km}|null, towns: [name], cc}: what a link's
+//                                 area is, from the place names (the town nearest a circle's centre, the biggest inside)
+//   {type:'save', id, name, …area, rangeKm}
 //                              → {type:'saveProgress', id, done, total, bytes} …, then {type:'saved', id, ok, area?,
 //                                 missing?, stopped?, message?} and a fresh 'areas'. The same id again finishes an
 //                                 unfinished area. One save at a time.
@@ -46,7 +50,7 @@ import * as D from './dem.js';
 import { computePanorama, linkRidges } from './pano.js';
 import { loadPlaces, placeTileUrls, snapPeaks, liftPeaks, summitNear, buildLabels } from './targets.js';
 import { canaryBlob, canaryOk, decodeBitmap, decodePNG, MainThreadDecoder } from './decode.js';
-import { SavedStore, areaTiles, awsChildren, summary, RADII, DEFAULT_RADIUS, MAX_AREAS } from './saved.js';
+import { SavedStore, areaTiles, planArea, awsChildren, summary, cleanBox, reachKm, contains, coarserDetail, DEFAULT_RADIUS, MAX_AREAS, MAX_RADIUS_KM } from './saved.js';
 
 export const EYE = 1.6;                    // eye above the ground, metres
 export const AUTO_KM = 150, ALPS_KM = 250, ALPS_TRIGGER_M = 1500;
@@ -59,8 +63,9 @@ const PENDING = Symbol('pending');
 // Saving an area: downloads at a time (fewer than a view's, so a view started meanwhile isn't
 // starved), and how many Mapterhorn failures with no success at all mean it isn't answering.
 const SAVE_CONCURRENCY = 4, SAVE_GIVE_UP = 6;
-// For the estimate, when the view on screen holds no tile of a zoom to go by (bytes).
-const EST_TILE = 120000, EST_PLACES = 20000;
+// For the estimate, when the view on screen holds no tile of a zoom to go by (bytes). (z9–z12 tiles in
+// the Flinders Ranges were 34–144 KB, 93 KB on average, 2026-11-08.)
+const EST_TILE = 100000, EST_PLACES = 20000;
 const TILE_INIT = { mode: 'cors', credentials: 'omit' };
 
 export class Engine {
@@ -103,6 +108,7 @@ export class Engine {
 		if (m.type === 'eye') return this.eye(m);
 		if (m.type === 'areas') return this.sendAreas();
 		if (m.type === 'estimate') return this.estimate(m);
+		if (m.type === 'describe') return this.describe(m);
 		if (m.type === 'save') return this.save(m);
 		if (m.type === 'saveCancel') { if (this.saving && (!m.id || m.id === this.saving.id)) { this.saving.stopped = true; this.saving.ac.abort(); } return; }
 		if (m.type === 'unsave') return this.unsave(m);
@@ -316,7 +322,11 @@ export class Engine {
 			// Range: fixed, or auto (150 km, 250 km when the z7 ring shows terrain above 1,500 m).
 			const autoRange = m.rangeKm === 'auto' || m.rangeKm == null;
 			let rangeKm = autoRange ? AUTO_KM : Math.max(10, Math.min(300, +m.rangeKm || AUTO_KM));
-			const plan = () => D.planRings(lat, lon, rangeKm, { lite: p.lite, src: D.SOURCES[srcId] });
+			// Inside a saved area, no finer than it holds, so without signal nothing unsaved is asked for
+			// (an area bigger than 20 km keeps less detail close by: saved.js).
+			const areaDetail = this.saved.detailAt(lat, lon);
+			const detail = coarserDetail(p.lite ? 'lite' : 'full', areaDetail || 'full');
+			const plan = () => D.planFor(lat, lon, rangeKm, detail, D.SOURCES[srcId]);
 			let rings = plan();
 			const progress = (key) => { st.keys.add(key); if (!stale()) this.post({ type: 'progress', gen: this.gen, stage: 'terrain', done: Math.min(st.keys.size, st.total), total: st.total, bytes: st.bytes }); };
 			const tF = now();
@@ -423,7 +433,7 @@ export class Engine {
 			}
 			if (places) this.labels(full, ms, wall, T0); else this.post({ type: 'labels', gen: this.gen, items: [] });
 			this.post({ type: 'stats', gen: this.gen, ms: roundAll(ms), wall: roundAll(wall), tiles: st.total, bytes: st.bytes, net: st.net, cached: st.cached,
-				awsTiles: st.aws, lifted, source: this.held.src, rangeKm, decoder: dec.mode, failed: fails.length,
+				awsTiles: st.aws, lifted, source: this.held.src, rangeKm, decoder: dec.mode, failed: fails.length, detail, areaDetail,
 				rings: rings.map((R) => ({ z: R.z, src: R.src, km: R.outerKm, mpp: Math.round(R.mpp * 10) / 10, tiles: R.tiles.length })),
 				places: places ? { tiles: places.tiles, bytes: places.bytes, records: places.records.length, failed: places.failed.length } : null,
 				labels: this.lastLabelStats || null, memMB: this.memMB() });
@@ -469,7 +479,58 @@ export class Engine {
 	}
 	areaPlaceUrls(a) {
 		if (!this.env.placesBase) return Promise.resolve([]);
-		return placeTileUrls({ base: this.env.placesBase, lat: a.lat, lon: a.lon, rangeKm: Math.max(...a.ranges) + a.radiusKm, fetch: this.placesFetch, deadline: this.deadlines.places });
+		return placeTileUrls({ base: this.env.placesBase, lat: a.lat, lon: a.lon, rangeKm: Math.max(...a.ranges) + reachKm(a), fetch: this.placesFetch, deadline: this.deadlines.places });
+	}
+	// What an area is, for the page to say when a link offers to save one: the towns inside it, from
+	// the place names (never from the link). The 1° tiles it touches, at most 16, nearest its centre
+	// first. → {type:'described', key, near: {name, km} | null, towns: [name], cc}
+	async describe(m) {
+		const a = areaSpec(m), key = m.key;
+		if (!a || !this.env.placesBase) return this.post({ type: 'described', key, near: null, towns: [], cc: null });
+		// (the town a small circle is named by can be outside it: 25 km round at least)
+		const look = Math.max(reachKm(a), 25);
+		let urls = [];
+		try { urls = await placeTileUrls({ base: this.env.placesBase, lat: a.lat, lon: a.lon, rangeKm: look, fetch: this.placesFetch, deadline: this.deadlines.places }); } catch (e) { /* none */ }
+		const cellOf = (u) => u.match(/(-?\d+)\/(-?\d+)\.json$/).slice(1).map(Number);
+		urls = urls.map((u) => { const [la, lo] = cellOf(u); return { u, d: D.haversine(a.lat, a.lon, la + 0.5, lo + 0.5) }; }).sort((x, y) => x.d - y.d).slice(0, 16).map((x) => x.u);
+		const towns = [];
+		await Promise.all(urls.map(async (u) => {
+			try {
+				const r = await this.placesFetch(u);
+				if (!r.ok) return;
+				const j = await r.json();
+				for (const f of (j && j.f) || []) {
+					const [, name, en, la, lo, code, pop, , wl, , cc] = f;
+					// (Most Australian towns are PPLX in GeoNames; a city's districts carry no population here:
+				// build-places.mjs DISTRICT_PARENT_POP.)
+				if (!/^PPL/.test(code) || !(pop >= 50 || wl >= 5)) continue;
+					const lat = la / 1e4, lon = lo / 1e4, km = D.haversine(a.lat, a.lon, lat, lon) / 1000;
+					if (km <= look) towns.push({ name: en || name, lat, lon, pop: pop || 0, wl: wl || 0, cc, km, inside: contains(a, lat, lon) });
+				}
+			} catch (e) { /* a tile that didn't load: the rest */ }
+		}));
+		const big = towns.filter((t) => t.inside).sort((x, y) => y.pop - x.pop || y.wl - x.wl);
+		// The town to name a circle by: the best known (people and Wikipedia languages: Interlaken, not
+		// Unterseen) within a tenth of its radius (at least 10 km) of the centre, else the nearest.
+		const known = (t) => Math.log10(1 + t.pop) + Math.log10(1 + t.wl);
+		const close = towns.filter((t) => t.km <= Math.max(10, (a.radiusKm || 0) / 10)).sort((x, y) => known(y) - known(x) || x.km - y.km);
+		// (a box is named by the towns inside it; one with none, such as a national park, by the best-known
+		// town round about, as a circle is)
+		const anyInside = towns.some((t) => t.inside);
+		const near = a.box && anyInside ? null : (close[0] || towns.slice().sort((x, y) => (a.box ? known(y) - known(x) : 0) || x.km - y.km)[0] || null);
+		// Up to three more, biggest first, each well apart from those already named (so not a big town's
+		// own suburbs: "Port Pirie, Port Pirie South, Risdon Park").
+		const apart = Math.max(8, reachKm(a) / 12), picked = near ? [near] : [];
+		for (const t of big) {
+			if (picked.length >= (near ? 4 : 3)) break;
+			if (picked.every((p) => p.name !== t.name && D.haversine(p.lat, p.lon, t.lat, t.lon) / 1000 >= apart)) picked.push(t);
+		}
+		const ccs = new Map();
+		for (const t of (big.length ? big : towns).slice(0, 20)) ccs.set(t.cc, (ccs.get(t.cc) || 0) + 1);
+		const cc = [...ccs.entries()].sort((x, y) => y[1] - x[1])[0];
+		// Which way the centre is from the town it is named by (when it isn't at the town).
+		const dir = near && near.km >= 3 ? D.bearing(near.lat, near.lon, a.lat, a.lon) : null;
+		this.post({ type: 'described', key, near: near ? { name: near.name, km: Math.round(near.km), dir } : null, towns: picked.filter((t) => t !== near).map((t) => t.name), cc: cc ? cc[0] : null });
 	}
 	// What saving an area here would download: each tile at what the view on screen paid for it, or
 	// the average for its zoom in that view (else the view's average, else EST_TILE); a tile already
@@ -478,7 +539,7 @@ export class Engine {
 		const a = areaSpec(m);
 		if (!a) return;
 		await this.saved.refresh();
-		const tiles = areaTiles(a.lat, a.lon, a);
+		const { tiles, detail, tooBig } = planArea(a.lat, a.lon, a);
 		let places = [];
 		try { places = await this.areaPlaceUrls(a); } catch (e) { /* no index to be had: the terrain alone */ }
 		const perZ = new Map();
@@ -497,7 +558,7 @@ export class Engine {
 		}
 		const pl = this.held && this.held.places, perPlace = pl && pl.tiles ? pl.bytes / pl.tiles : EST_PLACES;
 		for (const u of places) if (!this.saved.urls.has(u)) bytes += perPlace;
-		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have });
+		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have, detail, tooBig });
 	}
 	// Save an area, or finish an unfinished one (the same id again). Each response is taken from this
 	// store if it's already there (another area, or an earlier try), else from the terrain cache, else
@@ -517,12 +578,15 @@ export class Engine {
 			const mf0 = await store.read(), before = mf0.areas.find((x) => x.id === id);
 			isNew = !before;
 			if (isNew && mf0.areas.length >= MAX_AREAS) throw sayable(`There are already ${MAX_AREAS} saved areas: delete one first.`);
-			const tiles = areaTiles(a.lat, a.lon, a);
+			// (an unfinished area is finished at the detail it was started with)
+			const pa = before ? { detail: before.detail, tiles: areaTiles(a.lat, a.lon, { ...a, detail: before.detail }), tooBig: false } : planArea(a.lat, a.lon, a);
+			if (pa.tooBig) throw sayable('This area is too big to save in one go: choose a smaller one.');
+			const tiles = pa.tiles;
 			let places;
 			try { places = await this.areaPlaceUrls(a); } catch (e) { throw sayable('The place names couldn’t be reached. Check the connection, then try again.'); }
 			const index = this.env.placesBase ? [new URL('index.json', this.env.placesBase).href] : [];
 			urls = new Set([...(before ? before.urls : []), ...tiles.map((t) => t.url), ...places, ...index]);
-			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, range: a.range,
+			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: pa.detail, range: a.range,
 				savedAt: Date.now(), status: 'saving', urls: [...urls], bytes: 0, missing: 0 };
 			// Listed before the first download, so a page closed half way leaves an unfinished area (to
 			// finish or delete), never tiles that nothing lists.
@@ -681,12 +745,18 @@ function failText(fails, total) {
 }
 // A save or estimate request's area: centre, radius, and the ranges a view there may use (an
 // automatic range can be either; a smaller fixed range needs only part of a bigger one's tiles).
+// A circle (lat, lon, radiusKm: 1–200 km) or a box (box: [s, w, n, e], saved.js cleanBox), as checked.
 function areaSpec(m) {
-	const lat = +m.lat, lon = +m.lon;
-	if (!(Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 85 && Math.abs(lon) <= 180)) return null;
-	const radiusKm = RADII.includes(+m.radiusKm) ? +m.radiusKm : DEFAULT_RADIUS;
 	const auto = m.rangeKm === 'auto' || m.rangeKm == null, fixed = Math.max(10, Math.min(300, +m.rangeKm || AUTO_KM));
-	return { lat, lon, radiusKm, range: auto ? 'auto' : fixed, ranges: auto ? [AUTO_KM, ALPS_KM] : [fixed] };
+	const range = { range: auto ? 'auto' : fixed, ranges: auto ? [AUTO_KM, ALPS_KM] : [fixed] };
+	if (m.box != null) {
+		const box = cleanBox(Array.isArray(m.box) ? m.box.map(Number) : null);
+		return box ? { lat: (box[0] + box[2]) / 2, lon: (box[1] + box[3]) / 2, radiusKm: null, box, ...range } : null;
+	}
+	const lat = +m.lat, lon = +m.lon, r = +m.radiusKm;
+	if (!(Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 85 && Math.abs(lon) <= 180)) return null;
+	const radiusKm = Number.isInteger(r) && r >= 1 && r <= MAX_RADIUS_KM ? r : DEFAULT_RADIUS;
+	return { lat, lon, radiusKm, box: null, ...range };
 }
 const sayable = (message) => Object.assign(new Error(message), { sayable: true });
 // Share of these rings' tiles that hold data.

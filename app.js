@@ -20,6 +20,7 @@
 import { OrientationSource, declination, decimalYear, readScreenAngle } from './orientation.js';
 import { geocode } from './geocode.js';
 import { attachDecodeFallback } from './decode.js';
+import { parseSaveLink, covers, boxSize, MAX_RADIUS_KM, MAX_SIDE_KM } from './saved.js';
 import { attitude, fromAttitude, wrap180, wrap360, autoCamFov, screenFov, qRot, DEG } from './attitude.js';
 import {
 	readTheme, detailParams, allowed, stopName, signProjection, cameraProjection, drawTerrain, drawTicks,
@@ -53,7 +54,7 @@ const DEMO = { name: 'Glass House Mountains Lookout', lat: -26.93153, lon: 152.8
 // stays right whichever way the phone is turned.
 const PREFS = 'xray-prefs-v2', OLD_PREFS = 'xray-prefs-v1';
 const AGLS = [0, 3, 6, 10, 20, 50, 100, 300], EXAGS = [1, 2, 3, 4], EXAG = 3;
-const SAVE_KMS = [2, 5, 10, 20];
+const SAVE_KMS = [2, 5, 10, 20, 50, 100, 200];
 const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5, diag: false };
 const readStored = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } };
 function loadPrefs() {
@@ -288,6 +289,7 @@ function onWorker(m) {
 		S.stats = m;
 		aboutUi();
 		if ($('placeSheet').open) askEstimate(); // a closer estimate now the view's tiles are in
+		if (ASK.spec && !ASK.spec.error) toWorker({ type: 'estimate', key: ASK.key, ...askArea(ASK.spec), rangeKm: prefs.range }); // (and for a link's area)
 		break;
 	}
 }
@@ -811,7 +813,7 @@ function placeUi() {
 	if (p && p.source === 'gps') note.textContent = p.acc > 100 ? `Your position is approximate (±${nf(p.acc)} m). Search for your address for a truer view.` : `Your position, to ±${nf(p.acc)} m. It follows you as you move, and stays on your phone.`;
 	$('gpsBtn').textContent = p && p.source === 'gps' ? 'Update my position' : 'Use my location';
 }
-addEventListener('hashchange', () => { const p = placeFromLink(); if (p) choosePlace(p); });
+addEventListener('hashchange', () => { const a = parseSaveLink(location.hash); if (a) { openAsk(a); return; } const p = placeFromLink(); if (p) choosePlace(p); });
 
 let wakeLock = null;
 async function keepAwake() {
@@ -907,6 +909,13 @@ $('placeForm').addEventListener('submit', async (e) => {
 	e.preventDefault();
 	const q = $('placeInput').value.trim();
 	if (!q) return;
+	// A pasted link (a Scan the Horizon link, or its #… part) is opened here, not sent to the search:
+	// an app on an iPhone's Home Screen has no address bar, so this is how a link to save an area gets in.
+	const lk = q.match(/#(?:save|at)=\S*/);
+	if (lk) {
+		const a = parseSaveLink(lk[0]), p = a ? null : placeFromLink(lk[0]);
+		if (a || p) { $('placeInput').value = ''; closeSheet($('placeSheet')); if (a) openAsk(a); else choosePlace(p); return; }
+	}
 	const mine = ++placeSeq, status = $('placeStatus'), box = $('placeResults');
 	box.replaceChildren();
 	status.textContent = `Searching for “${q}”…`;
@@ -1025,7 +1034,7 @@ diagUi();
 // the download for the place on screen, the progress with Stop, and Finish and Delete (two taps).
 // Their messages carry no generation number, as they aren't part of a view. Saving asks the browser
 // to keep the site's storage (navigator.storage.persist(); Firefox asks the visitor), inside the tap.
-const SAVED_MSGS = new Set(['areas', 'estimate', 'saveProgress', 'saved']);
+const SAVED_MSGS = new Set(['areas', 'estimate', 'saveProgress', 'saved', 'described']);
 const IOS_DEVICE = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 const SV = { areas: null, saving: null, prog: null, est: null, estFor: '', armed: null, armTimer: 0, drawn: '' };
 const mbText = (b) => `${(b / 1048576).toFixed(b < 9.95 * 1048576 ? 1 : 0)} MB`;
@@ -1036,6 +1045,16 @@ function areaName(p) {
 	return p.address ? (p.locality || 'A searched address') : p.name;
 }
 const radiusNow = () => +$('saveRadius').value || prefs.saveKm;
+// An area saved for an automatic range serves any range; one saved for a fixed range, that or less.
+const rangeCovered = (a) => a.range === 'auto' || (prefs.range !== 'auto' && prefs.range <= a.range);
+const detailWords = (d) => (d === 'lite' ? ', with a little less detail close by' : d === 'basic' ? ', with less detail close by' : '');
+const wifi = (b) => (b > 50 * 1048576 ? ' Best on Wi-Fi.' : '');
+const tens = (v) => nf(Math.max(10, Math.round(v / 10) * 10));
+function areaExtent(a) {
+	if (!a.box) return `Within ${a.radiusKm} km`;
+	const { wKm, hKm } = boxSize(a.box);
+	return `${tens(wKm)} × ${tens(hKm)} km`;
+}
 const estKey = () => (S.place ? `${S.place.lat.toFixed(5)},${S.place.lon.toFixed(5)},${radiusNow()},${prefs.range}` : '');
 function savedOpen() {
 	$('saveRadius').value = String(prefs.saveKm);
@@ -1073,10 +1092,16 @@ function onSaved(m) {
 		if (!SV.saving) SV.prog = null;
 	} else if (m.type === 'estimate') {
 		if (m.key === SV.estFor) SV.est = m;
+		if (m.key === ASK.key) ASK.est = m;
+	} else if (m.type === 'described') {
+		if (m.key === ASK.key) ASK.desc = m;
 	} else if (m.type === 'saveProgress') {
 		SV.saving = m.id; SV.prog = m;
 	} else if (m.type === 'saved') {
 		SV.saving = null; SV.prog = null;
+		// (listed now: the worker's fresh list of areas comes a moment later, and until then the sheet
+		// showed no area and Save still on)
+		if (m.area) SV.areas = (SV.areas || []).filter((a) => a.id !== m.area.id).concat(m.area);
 		const known = (SV.areas || []).find((a) => a.id === m.id), name = (m.area && m.area.name) || (known && known.name) || 'the area';
 		const text = m.ok ? `Saved “${name}” (${mbText(m.area.bytes)}): it works there without signal now.`
 			: m.area ? `“${name}” is saved apart from ${m.missing} of ${m.total} pieces that didn’t download. Tap Finish to try again.`
@@ -1087,18 +1112,108 @@ function onSaved(m) {
 		askEstimate();
 	}
 	savedUi();
+	if (ASK.spec) askUi();
 }
+
+// ---- A link offering to save an area (#save=…, saved.js parseSaveLink) ---------------------------------
+// For a site such as a guide to somewhere with no signal: link here, and the visitor can save the area
+// before they go. Nothing is downloaded unless "Save it" is tapped. What the area is comes from the
+// place names (the town nearest a circle's centre, the biggest towns in it, the country), never from the
+// link; the link's own name is only shown as what the link calls it. Answered either way, the address
+// becomes an ordinary link to the middle of the area, so a reload doesn't ask again.
+const ASK = { spec: null, key: '', est: null, desc: null, n: 0 };
+const DIRS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
+const dirWord = (b) => DIRS[Math.round((((b % 360) + 360) % 360) / 45) % 8];
+const listWords = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+const at2 = (p) => `${p.lat.toFixed(2)}, ${p.lon.toFixed(2)}`;
+function countryName(cc) {
+	try { return cc ? new Intl.DisplayNames(['en'], { type: 'region' }).of(cc) || '' : ''; } catch (e) { return ''; }
+}
+const askArea = (s) => (s.box ? { box: s.box } : { lat: s.lat, lon: s.lon, radiusKm: s.radiusKm });
+function askWords(s, d) {
+	const country = d ? countryName(d.cc) : '', towns = d && d.towns.length ? ` taking in ${listWords(d.towns)}` : '';
+	const off = (n) => (n.km < 3 || n.dir == null ? n.name : `${nf(n.km)} km ${dirWord(n.dir)} of ${n.name}`);
+	if (s.box) {
+		const { wKm, hKm } = boxSize(s.box);
+		const where = towns || (d && d.near ? ` centred ${off(d.near)}` : ` around ${at2(s)}`);
+		return `An area of about ${tens(wKm)} × ${tens(hKm)} km${where}${country ? `, ${country}` : ''}.`;
+	}
+	const at = d && d.near ? (d.near.km < 3 || d.near.dir == null ? d.near.name : `a spot ${off(d.near)}`) : at2(s);
+	return `Anywhere within ${nf(s.radiusKm)} km of ${at}${country ? `, ${country}` : ''}${towns ? `,${towns}` : ''}.`;
+}
+// What the saved area is called: the link's name, else one from the place names.
+function askLabel(s, d) {
+	if (s.name) return s.name;
+	if (s.box) return d && d.towns.length ? `Around ${d.towns[0]}` : `Around ${at2(s)}`;
+	return `Within ${s.radiusKm} km of ${d && d.near ? d.near.name : at2(s)}`;
+}
+function openAsk(s) {
+	ASK.spec = s; ASK.est = null; ASK.desc = null; ASK.key = 'ask' + (++ASK.n);
+	if (!s.error) {
+		toWorker({ type: 'areas' });
+		toWorker({ type: 'estimate', key: ASK.key, ...askArea(s), rangeKm: prefs.range });
+		toWorker({ type: 'describe', key: ASK.key, ...askArea(s) });
+	}
+	askUi();
+	if (!$('saveAsk').open) openSheet($('saveAsk'));
+}
+function askUi() {
+	const s = ASK.spec;
+	if (!s) return;
+	const bad = !!s.error;
+	$('saveAskTitle').textContent = bad ? 'This link can’t be used' : 'Save an area to use without signal?';
+	$('saveAskWhat').textContent = bad ? (s.error === 'big' ? `It asks to save an area bigger than can be saved in one go: at most ${MAX_RADIUS_KM} km round a point, or ${MAX_SIDE_KM} km a side.` : 'It asks to save an area, but its numbers can’t be read.')
+		: ASK.desc ? askWords(s, ASK.desc) : 'Working out where it is…';
+	$('saveAskName').hidden = bad || !s.name;
+	if (s.name) $('saveAskName').textContent = `The link calls it “${s.name}”.`;
+	const e = ASK.est, have = e && !e.tooBig && (SV.areas || []).find((a) => a.status === 'saved' && rangeCovered(a) && covers(a, { ...s, detail: e.detail }));
+	$('saveAskSize').hidden = bad;
+	$('saveAskSize').textContent = !e ? 'Working out the size…' : e.tooBig ? 'It is too big to save in one go.' : have ? `It is already saved, as “${have.name}”.`
+		: `About ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e.detail)}.${wifi(e.bytes)}${SV.saving ? ' (Another area is being saved: this can start when it has finished.)' : ''}`;
+	$('saveAskKeep').hidden = bad || !!(e && (e.tooBig || have));
+	$('saveAskIos').hidden = bad || !(IOS_DEVICE && !IOS_APP);
+	$('saveAskGo').hidden = bad;
+	$('saveAskGo').disabled = !e || e.tooBig || !!have || !!SV.saving;
+	$('saveAskNo').textContent = bad || (e && (e.tooBig || have)) ? 'OK' : 'Not now';
+}
+// The dialog answered: the address becomes a link to the middle of the area (none for a bad link).
+function askDone() {
+	const s = ASK.spec, d = ASK.desc, e = ASK.est;
+	ASK.spec = null; ASK.key = '';
+	closeSheet($('saveAsk'));
+	const at = s && !s.error ? { name: askLabel(s, d), lat: s.lat, lon: s.lon, source: 'link' } : null;
+	try { history.replaceState(null, '', location.pathname + location.search + (at ? `#at=${+at.lat.toFixed(5)},${+at.lon.toFixed(5)}&name=${encodeURIComponent(at.name)}` : '')); } catch (err) { /* sandboxed */ }
+	return { s, at, e };
+}
+$('saveAskGo').addEventListener('click', () => {
+	const { s, at } = askDone();
+	if (!s || s.error) return;
+	if (!S.started) begin();
+	if (!S.place || S.place.lat !== at.lat || S.place.lon !== at.lon) choosePlace(at); else { S.place.name = at.name; placeUi(); }
+	$('startLinkName').textContent = at.name;
+	saveArea({ id: 'a' + Date.now().toString(36), name: at.name, lat: s.lat, lon: s.lon, radiusKm: s.radiusKm || null, box: s.box || null, range: prefs.range });
+	// (the progress, with Stop, is in the place sheet)
+	savedOpen(); placeUi(); openSheet($('placeSheet'));
+});
+$('saveAskNo').addEventListener('click', () => {
+	const { at } = askDone();
+	if (at) { if (!S.place) setPlace(at); $('startLinkName').textContent = at.name; }
+	if (!S.started) openSheet($('intro'));
+});
+$('saveAsk').addEventListener('cancel', (e) => { e.preventDefault(); $('saveAskNo').click(); }); // Escape is "Not now"
 function savedUi() {
 	const p = S.place, busy = !!SV.saving, r = radiusNow(), e = SV.est && SV.est.key === estKey() ? SV.est : null;
 	const areas = SV.areas || [];
-	// Already inside a finished area that big, saved for this range? (An automatic range needs both 150
-	// and 250 km; a fixed one is covered by any area saved for at least as far.)
-	const covers = (a) => a.range === 'auto' || (prefs.range !== 'auto' && prefs.range <= a.range);
-	const inside = p && areas.find((a) => a.status === 'saved' && covers(a) && km(a.lat, a.lon, p.lat, p.lon) + r <= a.radiusKm + 0.05);
-	$('saveBtn').disabled = !p || busy || !!inside;
+	// Already inside a finished area that big, at that detail, saved for this range? (An automatic
+	// range needs both 150 and 250 km; a fixed one is covered by any area saved for at least as far.)
+	const need = p && { lat: p.lat, lon: p.lon, radiusKm: r, detail: e ? e.detail : r <= 20 ? 'full' : 'lite' };
+	const inside = p && areas.find((a) => a.status === 'saved' && rangeCovered(a) && covers(a, need));
+	$('saveBtn').disabled = !p || busy || !!inside || !!(e && e.tooBig);
 	const where = !p ? '' : p.source === 'gps' ? 'where you are' : areaName(p);
 	$('saveEst').textContent = !p ? 'Choose a place first.' : inside ? `Already saved, as part of “${inside.name}”.`
-		: e ? (e.have >= e.tiles && e.bytes < 1e5 ? 'Already saved.' : `Anywhere within ${r} km of ${where}: about ${mbText(Math.max(e.bytes, 1e5))} to download.`)
+		: e ? (e.tooBig ? 'That is too big to save in one go: choose a smaller area.'
+			: e.have >= e.tiles && e.bytes < 1e5 ? 'Already saved.'
+			: `Anywhere within ${r} km of ${where}: about ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e.detail)}.${wifi(e.bytes)}`)
 		: 'Working out the size…';
 	$('saveProg').hidden = !busy;
 	$('saveText').hidden = !(busy && SV.prog);
@@ -1125,7 +1240,7 @@ function areaItem(a) {
 	n.className = 'rn'; n.textContent = a.name;
 	const when = a.savedAt ? new Date(a.savedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(new Date(a.savedAt).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) }) : '';
 	w.className = 'rw';
-	w.textContent = `Within ${a.radiusKm} km · ` + (a.id === SV.saving ? 'saving…' : a.status === 'saved' ? `${mbText(a.bytes)} · saved ${when}` : `not finished${a.missing ? ` (${a.missing} pieces missing)` : ''}`);
+	w.textContent = `${areaExtent(a)}${a.detail && a.detail !== 'full' ? ' · less detail close by' : ''} · ` + (a.id === SV.saving ? 'saving…' : a.status === 'saved' ? `${mbText(a.bytes)} · saved ${when}` : `not finished${a.missing ? ` (${a.missing} pieces missing)` : ''}`);
 	go.append(n, w);
 	go.addEventListener('click', () => { closeSheet($('placeSheet')); choosePlace({ name: a.name, lat: a.lat, lon: a.lon, source: 'saved' }); });
 	li.append(go);
@@ -1200,6 +1315,7 @@ function aboutUi() {
 	el.textContent = `From ${S.place.name}: terrain from ${from}, ${nf(s.tiles || 0)} tiles, ${((s.bytes || 0) / 1048576).toFixed(1)} MB, out to ${nf(p.rangeKm)} km. `
 		+ `Worked out in ${(total / 1000).toFixed(1)} s (download ${nf(ms.fetch || 0)} ms, decoding ${nf(ms.decode || 0)} ms, first skyline ${nf(ms.coarse || 0)} ms, full panorama ${nf(ms.full || 0)} ms, names ${nf(ms.labels || 0)} ms). `
 		+ (p.summit ? `Looking from the top of ${p.summit.name}, ${nf(p.summit.dist)} m from the place chosen. ` : '')
+		+ (s.areaDetail && s.areaDetail !== 'full' ? 'Inside a saved area that keeps less detail close by, so the nearest hills come from coarser data. ' : '')
 		+ `Eye ${nf(p.eye)} m above sea level (the ground there is ${nf(p.ground)} m${aglMetres() ? `, plus ${aglMetres()} m up` : ''}).`;
 }
 
@@ -1485,8 +1601,9 @@ applyTheme();
 setDetail(prefs.detail);
 resize();
 makeWorker();
+const askLink = parseSaveLink(location.hash);
 {
-	const link = placeFromLink();
+	const link = askLink ? (askLink.error ? null : { name: askLink.name || at2(askLink), lat: askLink.lat, lon: askLink.lon, source: 'link' }) : placeFromLink();
 	if (link) {
 		$('startLink').hidden = false;
 		$('startLinkName').textContent = link.name;
@@ -1500,7 +1617,7 @@ makeWorker();
 }
 if (!window.DeviceOrientationEvent || !('ontouchstart' in window)) $('introHint').textContent = 'On a computer: drag the drawing to look around, and scroll to zoom. It works indoors too: the drawing is made from elevation data, as if walls, trees and buildings were glass.';
 placeUi(); cardUi(); modeUi(); camUi(); camZoomUi();
-openSheet($('intro'));
+if (askLink) openAsk(askLink); else openSheet($('intro'));
 requestAnimationFrame(frame);
 
 // An installable app that works offline once opened (sw.js), on https or localhost only. Registered
