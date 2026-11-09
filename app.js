@@ -1131,7 +1131,7 @@ function onSaved(m) {
 // place names (the town nearest a circle's centre, the biggest towns in it, the country), never from the
 // link; the link's own name is only shown as what the link calls it. Answered either way, the address
 // becomes an ordinary link to the middle of the area, so a reload doesn't ask again.
-const ASK = { spec: null, key: '', est: null, desc: null, n: 0 };
+const ASK = { spec: null, key: '', est: null, desc: null, have: null, n: 0 };
 const DIRS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'];
 const dirWord = (b) => DIRS[Math.round((((b % 360) + 360) % 360) / 45) % 8];
 const listWords = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
@@ -1158,7 +1158,7 @@ function askLabel(s, d) {
 	return `Within ${s.radiusKm} km of ${d && d.near ? d.near.name : at2(s)}`;
 }
 function openAsk(s) {
-	ASK.spec = s; ASK.est = null; ASK.desc = null; ASK.key = 'ask' + (++ASK.n);
+	ASK.spec = s; ASK.est = null; ASK.desc = null; ASK.have = null; ASK.key = 'ask' + (++ASK.n);
 	if (!s.error) {
 		toWorker({ type: 'areas' });
 		toWorker({ type: 'estimate', key: ASK.key, ...askArea(s), rangeKm: prefs.range });
@@ -1174,19 +1174,23 @@ function askUi() {
 	const s = ASK.spec;
 	if (!s) return;
 	const bad = !!s.error;
-	$('saveAskTitle').textContent = bad ? 'This link can’t be used' : 'Save an area to use without signal?';
+	const e = ASK.est, have = e && !e.tooBig && (SV.areas || []).find((a) => a.status === 'saved' && rangeCovered(a) && covers(a, { ...s, detail: e.detail }));
+	ASK.have = have || null;
+	$('saveAskTitle').textContent = bad ? 'This link can’t be used' : have ? 'This area is already saved' : 'Save an area to use without signal?';
 	$('saveAskWhat').textContent = bad ? (s.error === 'big' ? `It asks to save an area bigger than can be saved in one go: at most ${MAX_RADIUS_KM} km round a point, or ${MAX_SIDE_KM} km a side.` : 'It asks to save an area, but its numbers can’t be read.')
 		: ASK.desc ? askWords(s, ASK.desc) : 'Working out where it is…';
 	$('saveAskName').hidden = bad || !s.name;
 	if (s.name) $('saveAskName').textContent = `The link calls it “${s.name}”.`;
-	const e = ASK.est, have = e && !e.tooBig && (SV.areas || []).find((a) => a.status === 'saved' && rangeCovered(a) && covers(a, { ...s, detail: e.detail }));
 	$('saveAskSize').hidden = bad;
-	$('saveAskSize').textContent = !e ? 'Working out the size…' : e.tooBig ? 'It is too big to save in one go.' : have ? `It is already saved, as “${have.name}”.`
+	$('saveAskSize').textContent = !e ? 'Working out the size…' : e.tooBig ? 'It is too big to save in one go.' : have ? `It is saved as “${have.name}”, so it works there without signal.`
 		: `About ${mbText(Math.max(e.bytes, 1e5))} to download${detailWords(e)}.${wifi(e.bytes)}${SV.saving ? ' (Another area is being saved: this can start when it has finished.)' : ''}`;
 	$('saveAskKeep').hidden = bad || !!(e && (e.tooBig || have));
 	$('saveAskIos').hidden = bad || !(IOS_DEVICE && !IOS_APP);
-	$('saveAskGo').hidden = bad;
-	$('saveAskGo').disabled = !e || e.tooBig || !!have || !!SV.saving;
+	// (already saved: the button looks from there instead; it used to stay "Save it", disabled but looking
+	// the same, so a tap did nothing)
+	$('saveAskGo').hidden = bad || !!(e && e.tooBig);
+	$('saveAskGo').textContent = have ? 'Look from there' : 'Save it';
+	$('saveAskGo').disabled = !have && (!e || !!SV.saving);
 	$('saveAskNo').textContent = bad || (e && (e.tooBig || have)) ? 'OK' : 'Not now';
 }
 // The dialog answered: the address becomes a link to the middle of the area (none for a bad link).
@@ -1200,12 +1204,13 @@ function askDone() {
 	return { s, at, e };
 }
 $('saveAskGo').addEventListener('click', () => {
-	const { s, at } = askDone();
+	const have = ASK.have, { s, at } = askDone();
 	if (!s || s.error) return;
 	if (!S.started) begin();
 	pendingLink = null;
 	if (!S.place || S.place.lat !== at.lat || S.place.lon !== at.lon) choosePlace(at); else { S.place.name = at.name; placeUi(); }
 	$('startLinkName').textContent = at.name;
+	if (have) return; // ("Look from there": it is saved already)
 	saveArea({ id: 'a' + Date.now().toString(36), name: at.name, lat: s.lat, lon: s.lon, radiusKm: s.radiusKm || null, box: s.box || null, range: prefs.range });
 	// (the progress, with Stop, is in the place sheet)
 	savedOpen(); placeUi(); openSheet($('placeSheet'));

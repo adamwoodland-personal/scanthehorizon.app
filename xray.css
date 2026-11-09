@@ -231,6 +231,7 @@ dialog.sheet::backdrop { background: rgba(15, 20, 26, 0.55); }
 .res.behind .rn { color: var(--accent); }
 .go { display: block; width: 100%; margin: 14px 0 8px; padding: 13px; border-radius: 12px; cursor: pointer; font-weight: 700; font-size: 17px;
 	border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+.go:disabled { opacity: 0.5; cursor: default; }
 .plain { display: block; width: 100%; margin: 6px 0; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--field); cursor: pointer; }
 .warn { margin: 6px 0; padding: 4px 12px; border-radius: 10px; border: 1px solid var(--accent); }
 /* Saved areas (the place sheet): progress with Stop, and each area with its Finish / Delete buttons. */
