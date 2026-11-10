@@ -183,6 +183,13 @@ body.cam #card { background: rgba(10, 14, 20, 0.6); }
 #card .detail { margin-top: 2px; font-size: 13px; color: var(--ink); line-height: 1.35; height: 2.7em; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 #card .actions { display: flex; gap: 12px; align-items: center; }
 #cWiki { flex: none; font-size: 13px; line-height: 18px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+/* Go there sits at the end of the name's line and is shorter than it (22 px to the line's 24, 18 to
+   19.2 on a phone on its side), so showing it never makes the card taller. It takes taps from 8 px
+   below (over the detail, which takes none) but only 2 px above, leaving the Wikipedia link's. */
+#card .nrow { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 1px; }
+#card .nrow .name { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+#goBtn { flex: none; min-height: 0; height: 22px; padding: 0 11px; font-size: 13px; font-weight: 600; line-height: 20px; color: var(--ink); border-color: var(--accent); }
+#goBtn::after { inset: -3px -5px -9px; }
 #card .retry { width: auto; margin-top: 6px; padding: 6px 16px; border-color: var(--accent); }
 
 /* ---- Toast ---- */
@@ -260,6 +267,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--accent); width
 	#card { flex: 1 1 auto; margin: 0; min-height: 0; padding: 4px 10px; }
 	#card .name { font-size: 16px; }
 	#card .detail { font-size: 12px; height: 1.35em; -webkit-line-clamp: 1; line-clamp: 1; }
+	#goBtn { height: 18px; padding: 0 9px; font-size: 12px; line-height: 16px; }
 	.tool { padding: 4px 9px; min-height: 30px; }
 	.chip { min-height: 30px; padding: 4px 10px; }
 }

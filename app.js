@@ -724,6 +724,7 @@ function startGps() {
 	if (!navigator.geolocation) { toast('Location isn’t available here: search for a place instead'); openSheet($('placeSheet')); return; }
 	stopGps();
 	gpsWanted = true;
+	clearTrail();
 	const gen = ++locGen;
 	if (!S.place || S.place.source !== 'gps') { $('placeName').textContent = 'Finding your position…'; $('placeAcc').hidden = true; }
 	watchId = navigator.geolocation.watchPosition((pos) => onFix(pos, gen), (err) => onGpsError(err, gen), { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 });
@@ -788,6 +789,44 @@ function onGpsError(err, gen) {
 	placeUi(); // (not left at "Finding your position…" over a place chosen before)
 	if (!S.place || S.place.source === 'gps') openSheet($('placeSheet'));
 }
+// ---- Go there: looking from a place named in the view --------------------------------------------------------
+// The card of a name tapped (or picked from the List) has Go there: it looks from that place, facing
+// the same way, so the view carries on past it, and GPS following stops, as for any place chosen. A
+// peak is gone to at its top as drawn (and the summit setting stands you on it). The places gone from
+// are kept in this page only, up to TRAIL_MAX, so the place sheet can offer "Back to …" the last one;
+// choosing a place any other way (a search, your location, a link, a saved area) clears them. Back to
+// your location asks the GPS again, so it is where you are now.
+const trail = [], TRAIL_MAX = 20;
+let wentTold = false;
+function goThere(L) {
+	if (!L || !S.place || !Number.isFinite(L.lat) || !Number.isFinite(L.lon)) return;
+	const az = wrap360(S.look.az);
+	trail.push({ ...S.place, az });
+	if (trail.length > TRAIL_MAX) trail.shift();
+	locGen++; stopGps(); gpsWanted = false;
+	setPlace({ name: L.name.slice(0, 60), lat: L.lat, lon: L.lon, source: 'label', az });
+	const tell = [];
+	if (!wentTold) { wentTold = true; tell.push(`Looking from ${L.name}. To go back, tap the place name at the top.`); }
+	if (L.approx) tell.push(`${tell.length ? 'Its' : `${L.name}’s`} position on the map is approximate, so this view may be a little off.`);
+	if (tell.length) toast(tell.join(' '), 6000);
+}
+function goBack() {
+	const p = trail.pop();
+	closeSheet($('placeSheet'));
+	if (!p) { trailUi(); return; }
+	S.az = p.az; S.userMoved = true;
+	if (p.source === 'gps') { startGps(); return; }   // (where you are now, followed again)
+	locGen++; stopGps(); gpsWanted = false;
+	setPlace(p);
+}
+function trailUi() {
+	const p = trail[trail.length - 1];
+	$('backBtn').hidden = !p;
+	if (p) $('backName').textContent = p.source === 'gps' ? 'your location' : p.name;
+}
+function clearTrail() { trail.length = 0; trailUi(); }
+$('backBtn').addEventListener('click', goBack);
+$('goBtn').addEventListener('click', () => { const L = S.selected !== null && S.labels.find((x) => x.id === S.selected); if (L) goThere(L); });
 function setPlace(p, follow = false) {
 	S.place = p;
 	S.decl = declination(p.lat, p.lon, decimalYear());
@@ -801,6 +840,7 @@ function setPlace(p, follow = false) {
 // the phone, nor keep the doorstep in storage (a GPS fix is never kept at all).
 function choosePlace(p) {
 	locGen++; stopGps(); gpsWanted = false;
+	clearTrail();
 	if (p.source === 'search') {
 		const r3 = (v) => Math.round(v * 1000) / 1000;
 		prefs.place = p.address ? { name: p.locality || 'Your last search', lat: r3(p.lat), lon: r3(p.lon) } : { name: p.name, lat: p.lat, lon: p.lon };
@@ -818,6 +858,7 @@ function placeUi() {
 	note.hidden = !(p && p.source === 'gps');
 	if (p && p.source === 'gps') note.textContent = p.acc > 100 ? `Your position is approximate (±${nf(p.acc)} m). Search for your address for a truer view.` : `Your position, to ±${nf(p.acc)} m. It follows you as you move, and stays on your phone.`;
 	$('gpsBtn').textContent = p && p.source === 'gps' ? 'Update my position' : 'Use my location';
+	trailUi();
 }
 addEventListener('hashchange', () => { const a = parseSaveLink(location.hash); if (a) { openAsk(a); return; } const p = placeFromLink(); if (p) choosePlace(p); });
 
@@ -1388,6 +1429,15 @@ function cardFor(L, off = null, hold = 1000) {
 	if (L.wiki) { wiki.href = `https://en.wikipedia.org/wiki/${encodeURIComponent(String(L.wiki === 1 ? L.name : L.wiki).replace(/ /g, '_'))}`; wiki.hidden = false; } else wiki.hidden = true;
 	say(`${off === null ? 'at' : 'near'}:${L.id}`, `${L.name}${L.sub ? ` (${L.sub})` : ''}. ${dir}${$('cKicker').textContent.slice(dir.length)}. ${bits.join(', ')}.`, hold);
 }
+// Go there, on the card of a name tapped or picked from the List only (not on one the card names
+// because it is ahead, which changes as the view turns). Its name for screen readers and voice
+// control starts with the words it shows.
+function goUi(L) {
+	if (!Number.isFinite(L.lat) || !Number.isFinite(L.lon)) return;
+	const b = $('goBtn'), a = `Go there: look from ${L.name}`;
+	b.hidden = false;
+	if (b.getAttribute('aria-label') !== a) { b.setAttribute('aria-label', a); b.title = `Look from ${L.name}, facing the same way`; }
+}
 // The degrees across the screen, either view.
 function viewWidth() {
 	if (S.view === 'sign') return signWidth();
@@ -1398,6 +1448,7 @@ function cardUi() {
 	retry.hidden = true;
 	setText('cSub', '');
 	$('cWiki').hidden = true;
+	$('goBtn').hidden = true;
 	const plain = (kicker, name, detail, key = null, hold = 0) => {
 		setText('cKicker', kicker); setText('cName', name); setText('cDetail', detail);
 		say(key, `${kicker}. ${name}. ${detail}`, hold);
@@ -1419,7 +1470,7 @@ function cardUi() {
 		return;
 	}
 	const sel = S.selected !== null && S.labels.find((L) => L.id === S.selected);
-	if (sel) { cardFor(sel, null, 0); return; }
+	if (sel) { cardFor(sel, null, 0); goUi(sel); return; }
 	// What the card names comes from what is drawn, so it is always a label on screen: the best
 	// within 2° of the centre (one in view before a behind-arrow, then by score), else the nearest
 	// drawn within a quarter of the screen either side, with which way to look.

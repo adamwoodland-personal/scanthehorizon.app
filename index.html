@@ -69,6 +69,7 @@
     "Big places hidden behind a hill shown with an arrow over the hill",
     "Turns with the phone's compass, or drag to look around",
     "A Detail slider to choose how many names to show, and a List of them all",
+    "Go to any place named to see the view from there",
     "An optional camera view with the drawing over the live picture",
     "Works indoors, and offline for views already opened and for areas saved ahead"
    ],
@@ -99,7 +100,7 @@
    "name": "What does Scan the Horizon do?",
    "acceptedAnswer": {
     "@type": "Answer",
-    "text": "It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population and a link to Wikipedia; the Detail slider chooses how many names to show."
+    "text": "It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show."
    }
   },
   {
@@ -213,7 +214,11 @@
 			<p class="kicker" id="cKicker">One moment</p>
 			<a id="cWiki" href="https://en.wikipedia.org/" target="_blank" rel="noopener noreferrer" hidden>More on Wikipedia ›</a>
 		</div>
-		<p class="name"><span id="cName">…</span> <span id="cSub" class="sub"></span></p>
+		<!-- Go there shows on the name's line, no taller than it, for a name tapped or picked from the List. -->
+		<div class="nrow">
+			<p class="name"><span id="cName">…</span> <span id="cSub" class="sub"></span></p>
+			<button id="goBtn" class="chip" type="button" hidden>Go there</button>
+		</div>
 		<p class="detail" id="cDetail"></p>
 		<div class="actions">
 			<button id="retryBtn" class="plain retry" type="button" hidden>Try again</button>
@@ -259,6 +264,7 @@
 	<div class="inner">
 		<button class="close" type="button" aria-label="Close">✕</button>
 		<h2 id="placeTitle">Where are you looking from?</h2>
+		<button id="backBtn" class="plain" type="button" hidden>Back to <span id="backName"></span></button>
 		<button id="gpsBtn" class="go" type="button">Use my location</button>
 		<p id="gpsNote" class="small" hidden></p>
 		<form id="placeForm" role="search">
@@ -381,7 +387,7 @@
 		<!-- Keep these word for word the same as the FAQPage JSON-LD in <head> (page-test.js checks). -->
 		<div class="faq">
 			<h4>What does Scan the Horizon do?</h4>
-			<p>It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population and a link to Wikipedia; the Detail slider chooses how many names to show.</p>
+			<p>It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show.</p>
 			<h4>How does it know what is on the horizon?</h4>
 			<p>It downloads elevation data for the land around you, out to 150 km (250 km near high mountains), and works out, bearing by bearing, which hills and ridges stand against the sky. It allows for the curve of the Earth and for refraction, the slight bending of light by the air that lets you see a little further than a straight line would. Each named place is then checked against the ground in front of it: a town behind a hill is left off, and a big one gets an arrow over the hill that hides it.</p>
 			<h4>Why isn't a hill I can see named, and what about trees and buildings?</h4>

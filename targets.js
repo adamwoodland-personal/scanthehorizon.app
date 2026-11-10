@@ -396,8 +396,10 @@ export function buildLabels({ records, obs, rangeKm, rings, pano, snaps = null, 
 			const a = anchorAt(pano, v.az, c.dist + v.own);
 			if (a > -90) alt = a;
 		}
+		// lat, lon: where it is (a peak's top as drawn when it was snapped), for the card's Go there.
 		const L = {
-			id: c.id, name: c.name, sub: c.sub, kind: c.kind, az: round(v.az, 3), alt: round(alt, 3), dist: round(c.dKm, 3),
+			id: c.id, name: c.name, sub: c.sub, kind: c.kind, lat: round(c.lat, 5), lon: round(c.lon, 5),
+			az: round(v.az, 3), alt: round(alt, 3), dist: round(c.dKm, 3),
 			ele: c.ele, eleSrc: c.eleSrc, pop: c.pop, status: v.status, margin: round(v.margin, 3), standOut: round(standOut, 3),
 			score: round(score, 3), major, blockAlt: v.status === 'hidden' ? round(v.blockAlt, 3) : null,
 			blockDist: v.status === 'hidden' ? round(v.blockDist / 1000, 3) : null, wiki: c.wiki, cc: c.cc,
