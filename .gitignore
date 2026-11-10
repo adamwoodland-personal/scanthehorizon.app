@@ -1,3 +1,6 @@
 # The place tiles (about 19,000 files, ~350 MB) are built from GeoNames by
 # ReferenceFiles/scanthehorizon/build-places.mjs and synced to S3 only; they are not kept in git.
 data/places/
+# Likewise the airport tiles (983 files, ~4 MB), built from OurAirports by
+# ReferenceFiles/scanthehorizon/build-airports.mjs.
+data/airports/

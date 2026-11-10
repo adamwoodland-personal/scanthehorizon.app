@@ -24,7 +24,7 @@ import { parseSaveLink, covers, boxSize, cleanName, MAX_RADIUS_KM, MAX_SIDE_KM }
 import { attitude, fromAttitude, wrap180, wrap360, autoCamFov, screenFov, qRot, DEG } from './attitude.js';
 import {
 	readTheme, detailParams, allowed, stopName, signProjection, cameraProjection, drawTerrain, drawTicks,
-	layoutLabels, drawLeaders, labelWidth, point,
+	layoutLabels, drawLeaders, labelWidth, point, AIR_STOPS,
 } from './draw.js';
 
 const $ = (id) => document.getElementById(id);
@@ -38,7 +38,13 @@ function km(lat1, lon1, lat2, lon2) {
 }
 const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 const KIND = { city: 'City', town: 'Town', village: 'Village', suburb: 'Suburb', hamlet: 'Hamlet', peak: 'Peak', hill: 'Hill', island: 'Island', cape: 'Cape',
-	bay: 'Bay', lake: 'Lake', waterfall: 'Waterfall', lighthouse: 'Lighthouse', tower: 'Tower', lookout: 'Lookout', dam: 'Dam', castle: 'Castle', monument: 'Monument' };
+	bay: 'Bay', lake: 'Lake', waterfall: 'Waterfall', lighthouse: 'Lighthouse', tower: 'Tower', lookout: 'Lookout', dam: 'Dam', castle: 'Castle', monument: 'Monument',
+	airport: 'Airport' };
+// An airport by its size (L.air: 1 OurAirports' large, 2 medium, which takes in air bases, 3 small).
+const AIR_KIND = { 1: 'Major airport', 2: 'Airport', 3: 'Airfield' };
+const kindWord = (L) => (L.kind === 'airport' && AIR_KIND[L.air]) || KIND[L.kind] || cap(L.kind || 'place');
+// The Airports setting, as screen readers say it (the slider shows AIR_STOPS).
+const AIR_SAY = ['No airports', 'Major airports only', 'Major and regional airports', 'All airports and airfields'];
 const STATUS = { visible: 'in view', marginal: 'just in view', hidden: 'behind the hills' };
 // The example on the start screen: the Glass House Mountains Lookout (OSM node 310543512), whose
 // sign this page copies.
@@ -51,11 +57,13 @@ const DEMO = { name: 'Glass House Mountains Lookout', lat: -26.93153, lon: 152.8
 // reaches everyone who never chose (v1 stored the ×2 default for every visitor, which is why the
 // key moved to v2; v1's other settings are carried over once, its hills' height and camera zoom
 // not). The camera zoom is kept as the camera's own field of view along its long side, so it
-// stays right whichever way the phone is turned.
+// stays right whichever way the phone is turned. The Airports setting (0 none … 3 every airfield) is
+// stored, like the hills' height, only once it has been chosen.
 const PREFS = 'xray-prefs-v2', OLD_PREFS = 'xray-prefs-v1';
 const AGLS = [0, 3, 6, 10, 20, 50, 100, 300], EXAGS = [1, 2, 3, 4], EXAG = 3;
 const SAVE_KMS = [2, 5, 10, 20, 50, 100, 200];
-const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5, diag: false };
+const AIR = 1;   // the Airports setting's default: major airports only
+const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, air: AIR, airSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5, diag: false };
 const readStored = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } };
 function loadPrefs() {
 	const p = { ...DEFAULTS };
@@ -66,6 +74,7 @@ function loadPrefs() {
 	if (AGLS.includes(raw.agl)) p.agl = raw.agl;
 	if (Number.isInteger(raw.floor) && raw.floor >= 1 && raw.floor <= 200) p.floor = raw.floor;
 	if (!old && EXAGS.includes(raw.exag)) { p.exag = raw.exag; p.exagSet = true; }
+	if (Number.isInteger(raw.air) && raw.air >= 0 && raw.air < AIR_STOPS.length) { p.air = raw.air; p.airSet = true; }
 	if (raw.range === 'auto' || [50, 100, 150, 250].includes(raw.range)) p.range = raw.range;
 	if (['auto', 'light', 'dark'].includes(raw.theme)) p.theme = raw.theme;
 	if (typeof raw.lite === 'boolean') p.lite = raw.lite;
@@ -85,8 +94,8 @@ let saveTimer = 0;
 function savePrefs() {
 	clearTimeout(saveTimer);
 	saveTimer = setTimeout(() => {
-		const { place, exag, exagSet, ...rest } = prefs;
-		const out = { ...rest, ...(exagSet ? { exag } : {}), place: place ? { name: place.name, lat: place.lat, lon: place.lon } : null };
+		const { place, exag, exagSet, air, airSet, ...rest } = prefs;
+		const out = { ...rest, ...(exagSet ? { exag } : {}), ...(airSet ? { air } : {}), place: place ? { name: place.name, lat: place.lat, lon: place.lon } : null };
 		try { localStorage.setItem(PREFS, JSON.stringify(out)); localStorage.removeItem(OLD_PREFS); } catch (e) { /* private mode: not kept */ }
 	}, 200);
 }
@@ -301,16 +310,21 @@ function onWorker(m) {
 }
 // The order labels claim their places in: first those the slider admits at its lowest setting,
 // then by score. Turning the slider up only adds labels after the ones already shown, and as the
-// layout is greedy, those keep their places: names don't vanish as the detail goes up.
+// layout is greedy, those keep their places: names don't vanish as the detail goes up. Airports
+// come in by the Airports setting (so this is worked out again when it changes), and go ahead of
+// the other names that come in at the same stop: they rank low by score, and on a crowded sign the
+// places before them took every row round their anchors (Landsborough and Caloundra airports from
+// the lookout found no room at all).
 function layoutOrder(items) {
 	const entry = new Map();
 	for (const L of items) {
 		let v = 101;
-		if (L.status !== 'hidden') for (let d = 0; d <= 100; d++) if (allowed(L, detailParams(d, 390))) { v = d; break; }
+		if (L.status !== 'hidden') for (let d = 0; d <= 100; d++) if (allowed(L, detailParams(d, 390, 0, prefs.air))) { v = d; break; }
 		entry.set(L, v);
 	}
 	S.entry = entry;
-	return items.filter((L) => entry.get(L) <= 100).sort((a, b) => entry.get(a) - entry.get(b) || b.score - a.score);
+	const air = (L) => (L.kind === 'airport' ? 1 : 0);
+	return items.filter((L) => entry.get(L) <= 100).sort((a, b) => entry.get(a) - entry.get(b) || air(b) - air(a) || b.score - a.score);
 }
 function checkReady() {
 	S.readyPending = !!(S.pano && S.pano.stage === 'full' && (S.labelsIn || S.placesErr));
@@ -319,7 +333,7 @@ function checkReady() {
 
 // Facing at the start, without a compass: the way with the most worth naming in one screen.
 function aimAtBest() {
-	const p = detailParams(S.detail, innerWidth), half = defaultWidth() / 2 * 0.8;
+	const p = detailParams(S.detail, innerWidth, 0, prefs.air), half = defaultWidth() / 2 * 0.8;
 	const list = S.labels.filter((L) => allowed(L, p));
 	if (!list.length) return;
 	let best = 0, bestSum = -1;
@@ -1016,6 +1030,15 @@ function settingsUi() {
 	$('setLite').checked = prefs.lite;
 	$('setSummit').checked = prefs.summit;
 	$('setDiag').checked = prefs.diag;
+	airUi();
+}
+// The Airports slider: its stop's name beside it. The worker always sends the airports in range, so
+// moving it only redraws.
+function airUi() {
+	const el = $('setAir');
+	if (+el.value !== prefs.air) el.value = String(prefs.air);
+	el.setAttribute('aria-valuetext', AIR_SAY[prefs.air]);
+	setText('setAirName', AIR_STOPS[prefs.air]);
 }
 function setSetting(k, v) {
 	if (k === 'agl') {
@@ -1029,6 +1052,13 @@ function setSetting(k, v) {
 	else if (k === 'lite') { prefs.lite = !!v; startRun(); }
 	else if (k === 'summit') { prefs.summit = !!v; changeEye(); }
 	else if (k === 'diag') { prefs.diag = !!v; diagUi(); }
+	else if (k === 'air' && Number.isInteger(+v) && +v >= 0 && +v < AIR_STOPS.length) {
+		if (+v === prefs.air && prefs.airSet) return;
+		prefs.air = +v; prefs.airSet = true;
+		S.order = layoutOrder(S.labels);
+		airUi();
+		if ($('listSheet').open) listUi();
+	}
 	else if (k === 'detail') { setDetail(v); return; }
 	else return;
 	savePrefs();
@@ -1042,6 +1072,7 @@ $('setRange').addEventListener('change', (e) => setSetting('range', e.target.val
 $('setLite').addEventListener('change', (e) => setSetting('lite', e.target.checked));
 $('setSummit').addEventListener('change', (e) => setSetting('summit', e.target.checked));
 $('setDiag').addEventListener('change', (e) => setSetting('diag', e.target.checked));
+$('setAir').addEventListener('input', (e) => setSetting('air', Math.round(+e.target.value)));
 
 // ---- Screen and compass diagnostics (Settings) -----------------------------------------------------
 // For reporting a problem from a phone, in a screenshot: the sizes the page sees, where the last tap
@@ -1341,7 +1372,7 @@ $('detail').addEventListener('input', (e) => setDetail(e.target.value));
 // hidden, which would bury the rest). The screen-reader version of the drawing.
 const LIST_HIDDEN = 12;
 function listUi() {
-	const p = detailParams(S.detail, G.w, zoomRelax());
+	const p = detailParams(S.detail, G.w, zoomRelax(), prefs.air);
 	const hidden = S.labels.filter((L) => L.status === 'hidden' && L.major).sort((a, b) => b.score - a.score).slice(0, LIST_HIDDEN);
 	const items = S.labels.filter((L) => allowed(L, p)).concat(hidden).sort((a, b) => a.az - b.az);
 	$('listNote').textContent = !S.place ? 'Choose a place first.' : !S.labelsIn ? (S.placesErr ? 'The place names didn’t load.' : 'Still working out the view…')
@@ -1352,9 +1383,9 @@ function listUi() {
 		b.type = 'button'; b.className = 'res' + (L.status === 'hidden' ? ' behind' : '');
 		const bb = document.createElement('span'), n = document.createElement('span'), w = document.createElement('span');
 		bb.className = 'rb'; bb.textContent = `${Math.round(L.az) % 360}° ${point(L.az)}`;
-		n.className = 'rn'; n.textContent = L.name + (L.sub ? ` (${L.sub})` : '');
+		n.className = 'rn'; n.textContent = L.name + (L.sub ? ` (${L.sub})` : '') + (L.iata ? ` (${L.iata})` : '');
 		const h = heightText(L);
-		w.className = 'rw'; w.textContent = [KIND[L.kind] || cap(L.kind || 'place'), `${kmText(L.dist)} away`, h && `${h} high`, L.status === 'hidden' ? behindWords(L) : STATUS[L.status]].filter(Boolean).join(' · ');
+		w.className = 'rw'; w.textContent = [kindWord(L), `${kmText(L.dist)} away`, h && `${h} high`, L.status === 'hidden' ? behindWords(L) : STATUS[L.status]].filter(Boolean).join(' · ');
 		b.append(bb, n, w);
 		b.addEventListener('click', () => {
 			closeSheet($('listSheet'));
@@ -1412,7 +1443,7 @@ function behindWords(L) {
 // The card for one place. off: how far it is from the centre (degrees, + to the right) when it's
 // named as the nearest one drawn rather than the one ahead; it then leads the kicker.
 function cardFor(L, off = null, hold = 1000) {
-	const kind = KIND[L.kind] || cap(L.kind || 'place');
+	const kind = kindWord(L);
 	const dir = off === null ? '' : `${Math.max(1, Math.round(Math.abs(off)))}° to your ${off < 0 ? 'left' : 'right'} · `;
 	setText('cKicker', `${dir}${kind} · ${L.status === 'hidden' ? behindWords(L) : STATUS[L.status] || ''}`);
 	setText('cName', L.name);
@@ -1421,6 +1452,7 @@ function cardFor(L, off = null, hold = 1000) {
 	const h = heightText(L);
 	if (h) bits.push(`${h} high`);
 	else if (L.pop > 0) bits.push(`about ${nf(L.pop)} people`);
+	if (L.iata) bits.push(`airport code ${L.iata}`);
 	bits.push(`bearing ${Math.round(L.az) % 360}° ${point(L.az)}`);
 	if (L.status === 'hidden' && L.blockDist) bits.push(behindWords(L) === 'over the horizon' ? 'hidden by the curve of the Earth' : `hidden by the ground ${kmText(L.blockDist)} away`);
 	if (L.approx) bits.push('its position on the map is approximate');
@@ -1574,7 +1606,7 @@ function draw() {
 	S.lastP = { kind: P.kind, cx: P.cx, hy: P.hy, ppd: P.ppd, exag: P.exag, centreAz: P.centreAz };
 	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 	ctx.clearRect(0, 0, G.W, G.H);
-	const params = detailParams(S.detail, G.w, zoomRelax());
+	const params = detailParams(S.detail, G.w, zoomRelax(), prefs.air);
 	ctx.save();
 	ctx.beginPath(); ctx.rect(0, G.top, G.W, G.bottom - G.top); ctx.clip();
 	const skyTop = drawTerrain(ctx, P, S.pano, params, theme, G);
@@ -1604,7 +1636,7 @@ function draw() {
 		// Every label is the name and how far away it is, whatever it is (Adam: a height on a peak and
 		// a distance on a town gave no clue which a number was). Tapping it opens the card with the rest.
 		const text = shortName(L.name), ht = kmText(L.dist);
-		cands.push({ key: 'l' + L.id, L, ax: p.x, ay: p.y, w: labelWidth(text, ht), text, ht, dashed: L.status === 'marginal' });
+		cands.push({ key: 'l' + L.id, L, ax: p.x, ay: p.y, w: labelWidth(text, ht), text, ht, dashed: L.status === 'marginal', air: L.kind === 'airport' });
 	}
 	// Look-ahead for the layout: every label the slider could admit, on screen, in the same order.
 	const ahead = cands.filter((c) => c.behind || c.L.id === sel);
@@ -1614,7 +1646,7 @@ function draw() {
 		if (p && p.x >= 0 && p.x <= G.W && L.id !== sel) ahead.push({ key: 'l' + L.id, ax: p.x, ay: p.y });
 	}
 	const t1 = performance.now();
-	const placed = layoutLabels(cands, G, skyTop, params.budget, S.prevRows, ahead);
+	const placed = layoutLabels(cands, G, skyTop, params.budget, S.prevRows, ahead, params.airBudget);
 	S.layoutMs = performance.now() - t1;
 	{
 		let n = 0;

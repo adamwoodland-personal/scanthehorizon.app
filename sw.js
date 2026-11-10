@@ -3,21 +3,25 @@
 //  - The page's code and navigations: NETWORK-FIRST, cache fallback. The shell (the page, its
 //    styles, every JS module including the worker's, the icons and the place-names index) is
 //    precached, so the page opens without a connection once it has been opened.
-//  - Place-name tiles (/data/places/v1/<lat>/<lon>.json, fetched by the page's worker): CACHE-FIRST,
-//    kept as they arrive (the newest PLACES_MAX) in their own cache, PLACES, which a deploy leaves
+//  - Place-name tiles (/data/places/v1/<lat>/<lon>.json, fetched by the page's worker) and the airport
+//    tiles beside them (/data/airports/v1/…, whose index is precached too): CACHE-FIRST, kept as they
+//    arrive (the newest PLACES_MAX of both) in their own cache, PLACES, which a deploy leaves
 //    alone: their URL carries the data's version (v1), so they can't go stale, and a view opened
 //    before keeps its names offline after an update. (Until sth-v2 they lived in the versioned cache
 //    and every deploy threw them away; activate moves any found in an older cache across.) If the
-//    data's version changes, rename PLACES with it, and activate deletes the old one.
+//    data's version changes, rename PLACES with it, and activate deletes the old one; new airport data
+//    likewise goes to a new version (airports/v2), never over v1.
 //  - Cross-origin requests are never touched. The terrain tiles (Mapterhorn, AWS) are cached by the
 //    page's worker itself, in Cache API 'xray-dem-v1' (180 days, about 400 tiles), and saved areas
 //    in 'xray-saved-v1' (saved.js, until the visitor deletes them): this worker never deletes either.
 //    The place search needs a connection anyway.
 //  - On activate, only this site's older caches (names starting 'sth-') are deleted.
 //  - Bump CACHE on every deploy that changes a precached file.
-const CACHE = 'sth-v12';
+const CACHE = 'sth-v13';
 const PLACES = 'sth-places-v1';
-const PLACES_MAX = 300;
+// (300 place tiles until the airports came, sth-v13: a view reads one to four airport tiles beside its
+// place tiles, so this keeps as many views' names as before)
+const PLACES_MAX = 400;
 const CORE = [
 	'/',
 	'/index.html',
@@ -39,9 +43,10 @@ const CORE = [
 	'/icon-512.png',
 	'/icon-maskable-512.png',
 	'/apple-touch-icon.png',
-	'/data/places/v1/index.json'
+	'/data/places/v1/index.json',
+	'/data/airports/v1/index.json'
 ];
-const PLACE_TILE = /^\/data\/places\/v1\/-?\d+\/-?\d+\.json$/;
+const PLACE_TILE = /^\/data\/(places|airports)\/v1\/-?\d+\/-?\d+\.json$/;
 const isPlaceTile = (r) => PLACE_TILE.test(new URL(r.url).pathname);
 
 self.addEventListener('install', (e) => {

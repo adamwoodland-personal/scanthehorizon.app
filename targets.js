@@ -10,6 +10,8 @@
 // "major", for the page's behind-arrows, and at most HIDDEN_MAX of them.
 //
 // Record (SPEC §4): [geonameid, name, en|0, lat×1e4, lon×1e4, code, pop, ele, wl, wiki, cc].
+// Airports (SPEC §4.1, build-airports.mjs) come from tiles of their own in the same format, with a
+// twelfth field, the IATA code: [−id, name, 0, lat×1e4, lon×1e4, AIRL|AIRM|AIRF, 0, ele, 0, wiki, cc, iata|0].
 import { haversine, finestAt, sampleAt, maxAround, ringForDistance, fetchWithDeadline, abortError, DEADLINES } from './dem.js';
 import { visibility, anchorAt } from './pano.js';
 
@@ -26,7 +28,14 @@ const KIND = {
 	ISL: 'island', ATOL: 'island', CAPE: 'cape', PT: 'cape', HDLD: 'cape', PEN: 'cape', BAY: 'bay',
 	LK: 'lake', LKN: 'lake', LKC: 'lake', RSV: 'lake', FLLS: 'waterfall',
 	LTHSE: 'lighthouse', TOWR: 'tower', OBPT: 'lookout', DAM: 'dam', CSTL: 'castle', MNMT: 'monument',
+	AIRL: 'airport', AIRM: 'airport', AIRF: 'airport',
 };
+// An airport's size (SPEC §4.1): 1 a major airport (OurAirports' large_airport), 2 a regional airport
+// or air base (medium), 3 an airfield or airstrip (small). The Airports setting names those up to a
+// size, whatever the Detail slider says (draw.js allowed()). Their importance only orders them among
+// the labels: never high enough for a stop's minimum score to name one.
+export const AIR_SIZE = { AIRL: 1, AIRM: 2, AIRF: 3 };
+const AIR_I = { 1: 3.0, 2: 2.3, 3: 1.5 };
 const POPULATED = new Set(['PPL', 'PPLA', 'PPLA2', 'PPLA3', 'PPLA4', 'PPLA5', 'PPLC', 'PPLG', 'PPLS', 'PPLF', 'PPLR', 'PPLL', 'PPLX']);
 const SETTLEMENT = new Set(['city', 'town', 'village', 'suburb', 'hamlet']);
 // A section of a city (PPLX) is classed by its population like any other settlement: GeoNames files
@@ -62,6 +71,7 @@ export function importance(kind, pop, ele, code = null, wl = 0) {
 		return code === 'PPLX' && !(wl >= PPLX_NOTABLE_WL) ? Math.min(SUBURB_MAX_I, I) : I;
 	}
 	if (isRelief(kind)) return Math.min(4.5, 1.5 + Math.max(0, ele || 0) / 400);
+	if (kind === 'airport') return AIR_I[AIR_SIZE[code]] ?? AIR_I[3];
 	return OTHER_I[kind] ?? 1.0;
 }
 export const distancePenalty = (dKm) => Math.log10(1 + dKm / 5);
@@ -100,9 +110,12 @@ export function placeRank(rec, { dKm = 0, height = null } = {}) {
 // The lowest detail stop (0 Fewest … 3 More) at which the page names a place for its kind alone,
 // whatever its score, or 4 if only All does: a mirror of draw.js allowed() (SPEC §6.4), keep in step.
 // standOut and status are known only after the visibility test; before it (pre: true) the place's
-// best case is assumed, so the test set covers everything the slider could name.
+// best case is assumed, so the test set covers everything the slider could name. Airports are named
+// by the Airports setting, not by the stop: 3 puts every one in the test set, and if more places are in
+// view than can be sent, they go with More's kinds.
 export function kindStop(c, { pre = false, standOut = 0, status = 'visible' } = {}) {
 	const k = c.kind, d = c.dKm, pop = c.pop || 0, so = pre ? Infinity : standOut;
+	if (k === 'airport') return 3;
 	if (k === 'city' || k === 'town' || (k === 'peak' && so >= 1)) return 0;
 	if ((isSettlement(k) && k !== 'suburb' && k !== 'hamlet' && pop >= 1000) || (k === 'peak' && ((c.wl || 0) >= 1 || so >= 0.5))) return 1;
 	if ((k === 'village' && d <= 50) || (k === 'peak' && status === 'visible' && d <= 60) || k === 'lake' || k === 'island' || k === 'lighthouse') return 2;
@@ -131,14 +144,15 @@ export function arcMinuteRounded(lat, lon) {
 }
 
 // ---- Tiles ---------------------------------------------------------------------------------------
-// 1° cells (floorLat, floorLon) that touch the disc of radius rangeKm.
-export function placeCells(lat, lon, rangeKm) {
+// The cells (south-west corners lat, lon) that touch the disc of radius rangeKm: 1° cells for the place
+// names, `step`° for a tile set whose index says so (the airports' 5°).
+export function placeCells(lat, lon, rangeKm, step = 1) {
 	const dLat = rangeKm / 111.2, dLon = rangeKm / (111.2 * Math.max(0.02, Math.cos(lat * D2R)));
-	const out = [];
-	for (let fy = Math.floor(Math.max(-90, lat - dLat)); fy <= Math.min(89, Math.floor(lat + dLat)); fy++) {
-		for (let fxu = Math.floor(lon - dLon); fxu <= Math.floor(lon + dLon); fxu++) {
+	const out = [], cell = (x) => Math.floor(x / step) * step;
+	for (let fy = cell(Math.max(-90, lat - dLat)); fy <= Math.min(90 - step, cell(lat + dLat)); fy += step) {
+		for (let fxu = cell(lon - dLon); fxu <= cell(lon + dLon); fxu += step) {
 			const fx = ((fxu + 180) % 360 + 360) % 360 - 180;
-			const cLat = Math.min(fy + 1, Math.max(fy, lat)), cLon = Math.min(fxu + 1, Math.max(fxu, lon));
+			const cLat = Math.min(fy + step, Math.max(fy, lat)), cLon = Math.min(fxu + step, Math.max(fxu, lon));
 			if (haversine(lat, lon, cLat, cLon) / 1000 > rangeKm) continue;
 			if (!out.some((c) => c.lat === fy && c.lon === fx)) out.push({ lat: fy, lon: fx });
 		}
@@ -156,7 +170,8 @@ async function getText(fetchFn, url, opts, what) {
 	return r.blob.text();
 }
 // The index is shared by every run, so it is fetched without any one run's signal (a cancelled run
-// must not fail the next one's places): only its deadline stops it.
+// must not fail the next one's places): only its deadline stops it. → { bits, step } (the cell size in
+// degrees: 1 unless the index says otherwise).
 function indexBits(base, fetchFn, deadline) {
 	if (!idxCache.has(base)) {
 		const p = (async () => {
@@ -165,22 +180,23 @@ function indexBits(base, fetchFn, deadline) {
 			try { text = await getText(fetchFn, url, deadline, 'places index'); }
 			catch (e) { await pause(300); text = await getText(fetchFn, url, deadline, 'places index'); }
 			const j = JSON.parse(text);
-			if (j.v !== 1 || typeof j.bits !== 'string') throw new Error('places index: unknown format');
+			const step = j && j.step !== undefined ? j.step : 1;
+			if (!j || j.v !== 1 || typeof j.bits !== 'string' || !(Number.isInteger(step) && step >= 1 && 90 % step === 0)) throw new Error('places index: unknown format');
 			const s = atob(j.bits), b = new Uint8Array(s.length);
 			for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
-			return b;
+			return { bits: b, step };
 		})();
 		p.catch(() => idxCache.delete(base));  // try again next time
 		idxCache.set(base, p);
 	}
 	return idxCache.get(base);
 }
-export const hasCell = (bits, fLat, fLon) => { const i = (fLat + 90) * 360 + (fLon + 180); return ((bits[i >> 3] >> (i & 7)) & 1) === 1; };
+export const hasCell = (bits, fLat, fLon, step = 1) => { const i = ((fLat + 90) / step) * (360 / step) + (fLon + 180) / step; return ((bits[i >> 3] >> (i & 7)) & 1) === 1; };
 // The URLs of the tiles that exist for the disc (for saving an area: saved.js). Throws if the index
 // can't be had.
 export async function placeTileUrls({ base, lat, lon, rangeKm, fetch: fetchFn, deadline = DEADLINES.places }) {
-	const bits = await indexBits(base, fetchFn, deadline);
-	return placeCells(lat, lon, rangeKm).filter((c) => hasCell(bits, c.lat, c.lon)).map((c) => new URL(`${c.lat}/${c.lon}.json`, base).href);
+	const { bits, step } = await indexBits(base, fetchFn, deadline);
+	return placeCells(lat, lon, rangeKm, step).filter((c) => hasCell(bits, c.lat, c.lon, step)).map((c) => new URL(`${c.lat}/${c.lon}.json`, base).href);
 }
 
 // Read the tiles for the disc. base: the URL of data/places/v1/; signal: the run's (a cancel stops
@@ -189,9 +205,9 @@ export async function placeTileUrls({ base, lat, lon, rangeKm, fetch: fetchFn, d
 // missing is reported. Throws only when the index or every tile failed.
 // → { records, tiles (loaded), total, bytes, failed: ['lat/lon', …] }.
 export async function loadPlaces({ base, lat, lon, rangeKm, fetch: fetchFn, signal = null, deadline = DEADLINES.places, onProgress }) {
-	const bits = await indexBits(base, fetchFn, deadline);
+	const { bits, step } = await indexBits(base, fetchFn, deadline);
 	if (signal && signal.aborted) throw abortError();
-	const cells = placeCells(lat, lon, rangeKm).filter((c) => hasCell(bits, c.lat, c.lon));
+	const cells = placeCells(lat, lon, rangeKm, step).filter((c) => hasCell(bits, c.lat, c.lon, step));
 	let done = 0, bytes = 0, lastErr = null;
 	const records = [];
 	onProgress && onProgress(0, cells.length, 0);
@@ -315,7 +331,7 @@ export function summitNear(records, snaps, lat, lon, radiusM = SUMMIT_M) {
 // (h) and whether it could be a behind-arrow (major). The test set is every place the slider can name
 // for its kind alone at some stop up to More (kindStop with pre: true: cities and towns, every peak
 // and hill, villages within 50 km or of 1,000 people, lakes, islands, lighthouses, capes, dams,
-// towers, lookouts, bays, waterfalls, castles, monuments, suburbs and hamlets within 15 km), plus the
+// towers, lookouts, bays, waterfalls, castles, monuments, airports, suburbs and hamlets within 15 km), plus the
 // best PRE_EXTRA of the rest (far hamlets and suburbs) by the pre-filter score. It used to be the best
 // 800 plus peaks within 20 km, which left visible named peaks the slider promises untested and
 // unnamed (Mount Tibrogargan from Narangba, 30.6 km). all: test everything in range (tests).
@@ -326,11 +342,12 @@ export function candidates({ records, obs, rangeKm, rings, snaps = null, all = f
 	const cands = [];
 	const seen = new Set();
 	for (const f of records) {
-		const [id, name, en, latE4, lonE4, code, pop, ele, wl, wiki, cc] = f;
+		const [id, name, en, latE4, lonE4, code, pop, ele, wl, wiki, cc, iata] = f;
 		if (seen.has(id)) continue;
 		seen.add(id);
 		const kind = kindOf(code, pop || 0, wl || 0);
 		if (!kind) continue;
+		const air = kind === 'airport' ? AIR_SIZE[code] : 0;
 		let lat = latE4 / 1e4, lon = lonE4 / 1e4;
 		const rounded = arcMinuteRounded(lat, lon);
 		let eleOut = ele > 0 ? ele : null, eleSrc = eleOut ? 'official' : null;
@@ -346,8 +363,8 @@ export function candidates({ records, obs, rangeKm, rings, snaps = null, all = f
 		const dKm = dist / 1000;
 		const rk = placeRank(f, { dKm, height: eleSrc === 'dem' ? eleOut : null });
 		cands.push({ id, name: en || name, sub: en && en !== name ? name : null, kind, code, lat, lon, dist, dKm, pop: pop || 0,
-			ele: eleOut, eleSrc, wl: wl || 0, wiki: wiki === 1 ? (en || name) : (typeof wiki === 'string' && wiki ? wiki : null),
-			cc, I: rk.I, pre: rk.pre, rounded });
+			ele: air ? null : eleOut, eleSrc: air ? null : eleSrc, wl: wl || 0, wiki: wiki === 1 ? (en || name) : (typeof wiki === 'string' && wiki ? wiki : null),
+			cc, I: rk.I, pre: rk.pre, rounded, air, iata: air && typeof iata === 'string' && iata ? iata : null });
 	}
 	cands.sort((a, b) => b.pre - a.pre);
 	const keep = [];
@@ -356,12 +373,12 @@ export function candidates({ records, obs, rangeKm, rings, snaps = null, all = f
 		if (!(all || kindStop(c, { pre: true }) <= 3 || extra++ < PRE_EXTRA)) continue;
 		// Height of the target itself: a peak's summit (the official height, or the DEM's own top if
 		// that is higher, so a near hill's drawn flank can't hide its own summit); the ground (+ 10 m
-		// for a settlement) otherwise.
+		// for a settlement, and for an airport: its hangars and terminal) otherwise.
 		if (isRelief(c.kind) && c.ele != null) { const s = snaps.get(c.id); c.h = Math.max(c.ele, s && s.dem > -1e9 ? s.dem : -Infinity); }
 		else {
 			// from the ring the drawing uses at that distance, so a place on a plain in view isn't
 			// "hidden" by a few metres of difference between rings
-			c.h = sampleAt(rings, ringForDistance(rings, c.dist), c.lat, c.lon) + (isSettlement(c.kind) ? 10 : 0);
+			c.h = sampleAt(rings, ringForDistance(rings, c.dist), c.lat, c.lon) + (isSettlement(c.kind) || c.air ? 10 : 0);
 		}
 		c.major = isMajor(c.kind, c.code, c.pop, c.ele || 0, c.wl);
 		keep.push(c);
@@ -405,6 +422,8 @@ export function buildLabels({ records, obs, rangeKm, rings, pano, snaps = null, 
 			blockDist: v.status === 'hidden' ? round(v.blockDist / 1000, 3) : null, wiki: c.wiki, cc: c.cc,
 			wl: c.wl, approx: c.rounded || undefined,
 			overHorizon: overHorizon || undefined,
+			air: c.air || undefined,   // an airport's size: 1 major, 2 regional, 3 airfield (AIR_SIZE)
+			iata: c.iata || undefined, // and its IATA code, where it has one (BNE)
 		};
 		items.push(L);
 		if (v.status !== 'hidden') {

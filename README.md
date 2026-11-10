@@ -33,11 +33,19 @@ The place names are about 19,000 small JSON files (some 350 MB), built from the 
 - A record is `[geonameid, name, englishName|0, lat×1e4, lon×1e4, featureCode, population, elevation, wl, wiki, countryCode]`, where `wl` is how many languages GeoNames has a name or Wikipedia link in (a measure of how well known it is) and `wiki` is `1` when the English Wikipedia title is the name, the title when it differs, or `0`.
 - Kept feature codes: populated places (`PPL`, `PPLA`…`PPLA5`, `PPLC`, `PPLG`, `PPLS`, `PPLF`, `PPLR`, `PPLL`, `PPLX`); mountains, peaks, hills, volcanoes and nunataks; islands, atolls, capes, points, headlands, peninsulas and bays; lakes, reservoirs and waterfalls; lighthouses, towers, lookouts, dams, castles and monuments.
 
+## The airports (`data/airports/`, not in this repository)
+
+Airports come from [OurAirports](https://ourairports.com/data/)' `airports.csv` (public domain), built into about 1,000 tiles (some 4 MB) by another script kept outside this repository (`build-airports.mjs`), uploaded with the site and not kept in git. The same format as the place names, with two differences:
+
+- The tiles are 5° cells, not 1°, and both files say so: `data/airports/v1/index.json` is `{"v":1,"step":5,"bits":"<base64>"}`, a 72 × 36 bitset with bit `((cellLat + 90) / 5) * 72 + (cellLon + 180) / 5`, and each tile `data/airports/v1/<cellLat>/<cellLon>.json` is `{"v":1,"step":5,"lat":-30,"lon":150,"f":[record, …]}`, its corner the cell's south-west one.
+- A record is `[-id, name, 0, lat×1e4, lon×1e4, code, 0, elevation, 0, wiki, countryCode, iata|0]`: OurAirports' id made negative (so it is never a geonameid), and `code` `AIRL` for a large airport, `AIRM` for a medium one (regional airports and air bases), `AIRF` for a small one (airfields and airstrips). Heliports, seaplane bases, balloonports and closed airports are left out.
+
 ## Data and credits
 
 - Terrain: © [Mapterhorn](https://mapterhorn.com/attribution), from Copernicus GLO-30 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA), Geoscience Australia 5 m LiDAR DEM (© Commonwealth of Australia, CC BY 4.0), swissALTI3D (© swisstopo) and other open national datasets.
 - Fallback terrain: Mapzen terrain tiles on AWS Open Data; 3DEP, GMTED2010 and SRTM courtesy of the U.S. Geological Survey; ETOPO1 (NOAA); Australia © Commonwealth of Australia (Geoscience Australia) 2017; EU-DEM (Copernicus).
 - Place names: [GeoNames](https://www.geonames.org/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- Airports: [OurAirports](https://ourairports.com/data/), public domain ([The Unlicense](https://github.com/davidmegginson/ourairports-data)).
 - Place search: [Photon](https://photon.komoot.io/) (komoot; © OpenStreetMap contributors) and [Open-Meteo](https://open-meteo.com/)'s geocoding API.
 - Magnetic declination: NOAA World Magnetic Model 2025 (public domain).
 

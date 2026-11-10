@@ -27,8 +27,11 @@
 //   progress, pano (coarse at 0.5° once the z7–z9 rings are in, then full at 0.2°), labels, error,
 //   stats, and {type:'decode', id, blob} for the decode fallback. Arrays are transferred.
 //   pano also carries summit: {name, dist} when the eye was put on a summit (else null), and sea: Uint8Array(n), 1 where the skyline is sea or flat ground at 0 m, 2 where
-//   terrain is still rising at the range edge. Labels also carry wl (Wikipedia language count) and
-//   approx: true where GeoNames has the point on a whole arc-minute (up to ~0.9 km off).
+//   terrain is still rising at the range edge. Labels also carry wl (Wikipedia language count),
+//   approx: true where GeoNames has the point on a whole arc-minute (up to ~0.9 km off), and for an
+//   airport (kind 'airport', from data/airports: SPEC §4.1) air, its size (1 major, 2 regional,
+//   3 airfield), and iata, its code where it has one. Airports in range are always sent: the page's
+//   Airports setting chooses which to name.
 //   A 'full' pano can come twice: when the place names are late, the full drawing goes out without
 //   the summit lift first, and again with it just before the labels.
 //   A places error can be partial: {type:'error', code:'places', fatal:false, partial:true, missing,
@@ -37,7 +40,7 @@
 //
 // Pipeline for 'run': decode canary (once) → ring plan by metres per pixel (dem.js), auto range
 // (150 km, or 250 km when the z7 ring shows terrain above 1,500 m) → coarse rings (z7–z9) → coarse
-// pano → places tiles, alongside the finer rings → summits lifted from official heights → full pano →
+// pano → places tiles (and the airports'), alongside the finer rings → summits lifted from official heights → full pano →
 // labels → stats. The engine is exported so a test page can run the identical code on its main
 // thread (CDP's CPU throttle can't reach workers) and Node can run it on recorded fixtures.
 //
@@ -57,6 +60,10 @@ export const AUTO_KM = 150, ALPS_KM = 250, ALPS_TRIGGER_M = 1500;
 const CONCURRENCY = 6;
 // How long, once the terrain is in, to wait for late place names before drawing without them.
 export const PLACES_GRACE_MS = 1500;
+// Airports (data/airports, SPEC §4.1) load beside the place names; once the names are in, they are
+// waited for this much longer at most, and left out of this view if still not in (or if they fail:
+// the names are what matter, so no error is reported for them).
+export const AIRPORTS_GRACE_MS = 2000;
 // The coarse pano needs this share of the coarse rings' tiles (holes would read as flat sea).
 const COARSE_MIN_SHARE = 0.8;
 const PENDING = Symbol('pending');
@@ -65,12 +72,12 @@ const PENDING = Symbol('pending');
 const SAVE_CONCURRENCY = 4, SAVE_GIVE_UP = 6;
 // For the estimate, when the view on screen holds no tile of a zoom to go by (bytes). (z9–z12 tiles in
 // the Flinders Ranges were 34–144 KB, 93 KB on average, 2026-11-08.)
-const EST_TILE = 100000, EST_PLACES = 20000;
+const EST_TILE = 100000, EST_PLACES = 20000, EST_AIRPORTS = 5000;
 const TILE_INIT = { mode: 'cors', credentials: 'omit' };
 
 export class Engine {
-	// env: { post(msg, transfer), fetch, caches, placesBase, decodeOverride?(url, blob, src),
-	//        deadlines?: { tile: {headMs, maxMs}, places: {headMs, maxMs} }, placesGraceMs? }
+	// env: { post(msg, transfer), fetch, caches, placesBase, airportsBase?, decodeOverride?(url, blob, src),
+	//        deadlines?: { tile: {headMs, maxMs}, places: {headMs, maxMs} }, placesGraceMs?, airportsGraceMs? }
 	constructor(env) {
 		this.env = env;
 		const dl = env.deadlines || {};
@@ -437,7 +444,8 @@ export class Engine {
 			this.post({ type: 'stats', gen: this.gen, ms: roundAll(ms), wall: roundAll(wall), tiles: st.total, bytes: st.bytes, net: st.net, cached: st.cached,
 				awsTiles: st.aws, lifted, source: this.held.src, rangeKm, decoder: dec.mode, failed: fails.length, detail, areaDetail, areaLess,
 				rings: rings.map((R) => ({ z: R.z, src: R.src, km: R.outerKm, mpp: Math.round(R.mpp * 10) / 10, tiles: R.tiles.length })),
-				places: places ? { tiles: places.tiles, bytes: places.bytes, records: places.records.length, failed: places.failed.length } : null,
+				places: places ? { tiles: places.tiles, bytes: places.bytes, records: places.names, failed: places.failed.length } : null,
+				airports: places ? places.airports : null,
 				labels: this.lastLabelStats || null, memMB: this.memMB() });
 			this.releaseProfile();
 		} catch (err) {
@@ -451,13 +459,35 @@ export class Engine {
 			this.fetcher.flush();
 		}
 	}
-	// The places tiles for this run → Promise<{ places, err }> (never rejects).
+	// The places tiles for this run → Promise<{ places, err }> (never rejects). The airports in range are
+	// added to places.records (their own count in places.airports), if they come in time.
 	startPlaces(rc, lat, lon, rangeKm, ms) {
 		if (!this.env.placesBase) return Promise.resolve({ places: null, err: null });
 		const tP = now();
+		const airP = this.startAirports(rc, lat, lon, rangeKm);
 		return loadPlaces({ base: this.env.placesBase, lat, lon, rangeKm, fetch: this.placesFetch, signal: rc.signal, deadline: this.deadlines.places,
 			onProgress: (done, total, bytes) => { if (rc.id === this.runId) this.post({ type: 'progress', gen: this.gen, stage: 'places', done, total, bytes }); } })
-			.then((places) => { ms.places = now() - tP; return { places, err: null }; }, (err) => ({ places: null, err }));
+			.then(async (places) => {
+				places.names = places.records.length;
+				places.airports = null;
+				if (airP) {
+					const air = await settleWithin(airP, this.env.airportsGraceMs ?? AIRPORTS_GRACE_MS);
+					if (air === PENDING) places.airports = { late: true };
+					else if (!air) places.airports = { error: true };
+					else {
+						for (const f of air.records) places.records.push(f);
+						places.airports = { tiles: air.tiles, total: air.total, bytes: air.bytes, records: air.records.length, failed: air.failed.length };
+					}
+				}
+				ms.places = now() - tP;
+				return { places, err: null };
+			}, (err) => ({ places: null, err }));
+	}
+	// The airport tiles for this run → Promise<result | null> (null when they can't be had; it never
+	// rejects), or null when this engine has none.
+	startAirports(rc, lat, lon, rangeKm) {
+		if (!this.env.airportsBase) return null;
+		return loadPlaces({ base: this.env.airportsBase, lat, lon, rangeKm, fetch: this.placesFetch, signal: rc.signal, deadline: this.deadlines.places }).catch(() => null);
 	}
 	// Height above ground, or the summit setting, changed: recompute from the held DEM (no fetching).
 	eye(m) {
@@ -482,6 +512,15 @@ export class Engine {
 	areaPlaceUrls(a) {
 		if (!this.env.placesBase) return Promise.resolve([]);
 		return placeTileUrls({ base: this.env.placesBase, lat: a.lat, lon: a.lon, rangeKm: Math.max(...a.ranges) + reachKm(a), fetch: this.placesFetch, deadline: this.deadlines.places });
+	}
+	// The airport tiles an area needs, with their index: [] when this engine has none, null when their
+	// index can't be had (the area is then saved without them, rather than not at all).
+	async areaAirportUrls(a) {
+		if (!this.env.airportsBase) return [];
+		try {
+			const urls = await placeTileUrls({ base: this.env.airportsBase, lat: a.lat, lon: a.lon, rangeKm: Math.max(...a.ranges) + reachKm(a), fetch: this.placesFetch, deadline: this.deadlines.places });
+			return [...urls, new URL('index.json', this.env.airportsBase).href];
+		} catch (e) { return null; }
 	}
 	// What an area is, for the page to say when a link offers to save one: the towns inside it, from
 	// the place names (never from the link). The 1° tiles it touches, at most 16, nearest its centre
@@ -598,6 +637,7 @@ export class Engine {
 		const { tiles, detail, tooBig } = planArea(a.lat, a.lon, { ...a, source });
 		let places = [];
 		try { places = await this.areaPlaceUrls(a); } catch (e) { /* no index to be had: the terrain alone */ }
+		const airports = (await this.areaAirportUrls(a)) || [];
 		const perZ = new Map();
 		let sum = 0, n = 0;
 		for (const e of this.store.values()) {
@@ -614,6 +654,8 @@ export class Engine {
 		}
 		const pl = this.held && this.held.places, perPlace = pl && pl.tiles ? pl.bytes / pl.tiles : EST_PLACES;
 		for (const u of places) if (!this.saved.urls.has(u)) bytes += perPlace;
+		const ap = pl && pl.airports && pl.airports.tiles ? pl.airports.bytes / pl.airports.tiles : EST_AIRPORTS;
+		for (const u of airports) if (!this.saved.urls.has(u)) bytes += ap;
 		const less = tooBig ? true : await this.lessDetail(a, detail, source);
 		this.post({ type: 'estimate', key: m.key, tiles: tiles.length, places: places.length, bytes: Math.round(bytes), have, detail, less, tooBig });
 	}
@@ -648,6 +690,8 @@ export class Engine {
 			let places;
 			try { places = await this.areaPlaceUrls(a); } catch (e) { throw sayable('The place names couldn’t be reached. Check the connection, then try again.'); }
 			const index = this.env.placesBase ? [new URL('index.json', this.env.placesBase).href] : [];
+			// (the airports' tiles and index: left out if their index can't be reached just now)
+			places = places.concat((await this.areaAirportUrls(a)) || []);
 			urls = new Set([...(before ? before.urls : []), ...tiles.map((t) => t.url), ...places, ...index]);
 			area = { id, name: (before && before.name) || String(m.name || '').trim().slice(0, 60) || 'A saved area', lat: a.lat, lon: a.lon, radiusKm: a.radiusKm, box: a.box, detail: pa.detail, less, source, range: a.range,
 				savedAt: Date.now(), status: 'saving', urls: [...urls], bytes: 0, missing: 0 };
@@ -875,6 +919,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined' && s
 		fetch: (u, o) => fetch(u, o),
 		caches: cacheStorage,
 		placesBase: new URL('./data/places/v1/', import.meta.url).href,
+		airportsBase: new URL('./data/airports/v1/', import.meta.url).href,
 	});
 	self.addEventListener('message', (e) => engine.handle(e.data));
 }

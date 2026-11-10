@@ -227,6 +227,10 @@ dialog.sheet::backdrop { background: rgba(15, 20, 26, 0.55); }
 .sheet input[type="number"] { width: 7em; flex: none; }
 .sheet input:focus-visible, .sheet select:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .srow { display: flex; gap: 8px; }
+/* The Airports slider (Settings), drawn as the Detail slider is, 40 px to touch. */
+.airrow { align-items: center; }
+#setAir { flex: 1 1 auto; min-width: 0; margin: -6px 0; height: 40px; accent-color: var(--accent); }
+#setAirName { flex: none; width: 10.5em; text-align: right; font-weight: 600; font-size: 14px; }
 .sbtn { flex: none; padding: 0 16px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; font-weight: 650; }
 .results { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
 .plainlist { list-style: none; padding: 0; }

@@ -65,6 +65,7 @@
    "featureList": [
     "The hills, mountains and coast around you, drawn like the sign at a lookout",
     "Towns, cities, peaks, islands, lakes and landmarks named, with how far away each one is",
+    "Airports named by size, from the major ones only to every airfield and airstrip",
     "Works out what can really be seen, allowing for the curve of the Earth and refraction",
     "Big places hidden behind a hill shown with an arrow over the hill",
     "Turns with the phone's compass, or drag to look around",
@@ -100,7 +101,7 @@
    "name": "What does Scan the Horizon do?",
    "acceptedAnswer": {
     "@type": "Answer",
-    "text": "It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show."
+    "text": "It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes, landmarks and airports named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show."
    }
   },
   {
@@ -116,7 +117,7 @@
    "name": "Why isn't a hill I can see named, and what about trees and buildings?",
    "acceptedAnswer": {
     "@type": "Answer",
-    "text": "Names come from GeoNames, an open database of places. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown."
+    "text": "Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown."
    }
   },
   {
@@ -360,6 +361,14 @@
 			<option value="250">250 km</option>
 		</select>
 		<p class="small">Automatic: 150 km, or 250 km near high mountains.</p>
+		<!-- The stop's name keeps one width (the longest), so the slider never changes length under a finger. -->
+		<label for="setAir">Airports</label>
+		<div class="srow airrow">
+			<input id="setAir" type="range" min="0" max="3" step="1" value="1" list="airStops" aria-valuetext="Major airports only">
+			<output id="setAirName" for="setAir">Major only</output>
+			<datalist id="airStops"><option value="0"></option><option value="1"></option><option value="2"></option><option value="3"></option></datalist>
+		</div>
+		<p class="small">Which airports to name, by size: none, the major ones, regional airports and air bases as well, or every airfield and airstrip too. They are named whatever the Detail, where there’s room.</p>
 		<div id="camZoom" hidden>
 			<p class="small">The camera view is zoomed as you pinched it.</p>
 			<button id="camZoomReset" class="plain" type="button">Reset the camera view's zoom</button>
@@ -387,11 +396,11 @@
 		<!-- Keep these word for word the same as the FAQPage JSON-LD in <head> (page-test.js checks). -->
 		<div class="faq">
 			<h4>What does Scan the Horizon do?</h4>
-			<p>It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes and landmarks named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show.</p>
+			<p>It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes, landmarks and airports named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show.</p>
 			<h4>How does it know what is on the horizon?</h4>
 			<p>It downloads elevation data for the land around you, out to 150 km (250 km near high mountains), and works out, bearing by bearing, which hills and ridges stand against the sky. It allows for the curve of the Earth and for refraction, the slight bending of light by the air that lets you see a little further than a straight line would. Each named place is then checked against the ground in front of it: a town behind a hill is left off, and a big one gets an arrow over the hill that hides it.</p>
 			<h4>Why isn't a hill I can see named, and what about trees and buildings?</h4>
-			<p>Names come from GeoNames, an open database of places. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown.</p>
+			<p>Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown.</p>
 			<h4>Does it work indoors, or without a compass?</h4>
 			<p>Yes. The drawing is made from data, not from the camera, so it works indoors and at night. With a compass the drawing turns as you turn; steel and electronics indoors can throw a compass off, so drag the drawing to line it up. Without a compass, on a computer for example, drag to look around and scroll or pinch to zoom.</p>
 			<h4>How accurate is it?</h4>
@@ -409,6 +418,7 @@
 		<p>Terrain: © Mapterhorn (<a href="https://mapterhorn.com/attribution" target="_blank" rel="noopener noreferrer">mapterhorn.com/attribution</a>), from Copernicus GLO-30 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA), Geoscience Australia 5 m LiDAR DEM (© Commonwealth of Australia, CC BY 4.0), swissALTI3D (© swisstopo) and other open national datasets.</p>
 		<p id="awsCredit" hidden>Fallback terrain: Mapzen terrain tiles on AWS Open Data; 3DEP, GMTED2010 and SRTM courtesy of the U.S. Geological Survey; ETOPO1 (NOAA); Australia © Commonwealth of Australia (Geoscience Australia) 2017; EU-DEM (Copernicus).</p>
 		<p>Place names: GeoNames (geonames.org), <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a></p>
+		<p>Airports: OurAirports (<a href="https://ourairports.com/data/" target="_blank" rel="noopener noreferrer">ourairports.com</a>), public domain</p>
 		<p>Place search: Photon (© OpenStreetMap contributors) and Open-Meteo.</p>
 		<h3>How this view was made</h3>
 		<p id="howMade" class="small">Nothing drawn yet.</p>

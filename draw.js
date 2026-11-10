@@ -70,7 +70,12 @@ export const STOPS = [
 export const MARGINAL_FROM = 3, MARGINAL_CLEAR_FROM = 2;
 export function stopName(v) { return STOPS.reduce((a, s) => (Math.abs(s.v - v) < Math.abs(a.v - v) ? s : a)).name; }
 // relax: how much the minimum score drops with zoom, 0.5·log2(default field / field now).
-export function detailParams(v, width, relax = 0) {
+// air: the Airports setting (0 none, 1 major, 2 and regional, 3 and every airfield: AIR_STOPS), which
+// names airports up to that size whatever the stop; they have a budget of their own, AIR_SHARE of the
+// names', so they come in where there's room without pushing the rest out, and never crowd a screen.
+export const AIR_STOPS = ['None', 'Major only', 'Major and regional', 'All, with airfields'];
+export const AIR_SHARE = 1 / 3;
+export function detailParams(v, width, relax = 0, air = 0) {
 	v = Math.min(100, Math.max(0, +v || 0));
 	const i = Math.min(3, Math.floor(v / 25)), a = STOPS[i], b = STOPS[i + 1], t = (v - a.v) / 25;
 	const level = v >= 100 ? 4 : i;
@@ -83,14 +88,19 @@ export function detailParams(v, width, relax = 0) {
 		dip = geo(ad, b.dip); len = geo(al, b.len);
 		if (t === 0 && a.dip !== null) { dip = a.dip; len = a.len; }
 	}
-	return { v, level, minScore: minScore - relax, budget: Math.max(1, Math.round(lerp(a.per390, b.per390) * width / 390)), dip, len };
+	const budget = Math.max(1, Math.round(lerp(a.per390, b.per390) * width / 390));
+	air = Math.min(3, Math.max(0, Math.round(+air) || 0));
+	return { v, level, minScore: minScore - relax, budget, dip, len, air, airBudget: Math.max(1, Math.round(budget * AIR_SHARE)) };
 }
 const SETTLEMENT = new Set(['city', 'town', 'village', 'suburb', 'hamlet']);
 // Is this place named at this setting? The kinds the stop considers are always eligible; anything
 // else must reach the minimum score. Hidden places never are (majors get a behind-arrow instead).
+// An airport is named by its size alone (the Airports setting, p.air), once in view as anything else
+// is: one only just in view comes in at Normal or More, as a town does.
 export function allowed(L, p) {
 	if (L.status === 'hidden') return false;
 	if (L.status === 'marginal' && p.level < (L.margin >= 0 ? MARGINAL_CLEAR_FROM : MARGINAL_FROM)) return false;
+	if (L.kind === 'airport') return (L.air || 3) <= (p.air || 0);
 	if (L.score >= p.minScore) return true;
 	const k = L.kind, lv = p.level, pop = L.pop || 0, so = L.standOut || 0;
 	if (lv >= 4) return true;
@@ -395,10 +405,11 @@ export function labelWidth(name, h) {
 // free row below itself (whose leader then passes beside this oval), or room to hang, or it costs
 // a lot. Ovals slide sideways to manage that, the leader still meeting them at least INSET px in
 // from either end (clear of the rounded ends). Labels with no place are left out. budget: how many
-// (besides behind-arrows) may be placed. A placed label's row is ≥ 0 above (counted down from the
-// top) and < 0 hanging (−1 is the lowest hanging row); `hang` says which.
+// (besides behind-arrows and airports) may be placed; airBudget: how many airports (cands with air
+// set), counted apart. A placed label's row is ≥ 0 above (counted down from the top) and < 0 hanging
+// (−1 is the lowest hanging row); `hang` says which.
 const HANG = 25, INSET = 10;
-export function layoutLabels(cands, g, skyTop, budget, prevRows, ahead = cands) {
+export function layoutLabels(cands, g, skyTop, budget, prevRows, ahead = cands, airBudget = 0) {
 	const placed = [], top0 = (g.labelTop ?? g.top) + 8; // below any note floating under the bar
 	const maxRow = Math.max(0, Math.floor((g.bottom - 30 - top0 - LAB_H) / ROW_H));
 	const hangBase = g.bottom - 6; // the lowest hanging oval's bottom edge
@@ -428,10 +439,10 @@ export function layoutLabels(cands, g, skyTop, budget, prevRows, ahead = cands) 
 	const lowRow = (c) => Math.min(maxRow, Math.floor((c.ay - gapOf(c) - LAB_H - top0) / ROW_H)); // the row nearest the anchor
 	const hangRow = (c) => Math.floor((hangBase - LAB_H - c.ay - gapOf(c)) / ROW_H);           // the hanging row nearest it (−1: none)
 	const rank = new Map(ahead.map((o, i) => [o.key, i]));
-	let normal = 0;
+	let normal = 0, airs = 0;
 	for (let ci = 0; ci < cands.length; ci++) {
 		const c = cands[ci];
-		if (!c.behind && normal >= budget) continue;
+		if (c.air ? airs >= airBudget : !c.behind && normal >= budget) continue;
 		if (c.ax < g.left + 4 || c.ax > g.right - 4 || c.ay < g.top + LAB_H + 14 || c.ay > g.bottom + 2) continue;
 		const w = Math.min(c.w, g.right - g.left - 8);
 		const lo = Math.max(g.left + 4, c.ax - w + INSET), hi = Math.min(g.right - 4 - w, c.ax - INSET);
@@ -500,7 +511,7 @@ export function layoutLabels(cands, g, skyTop, budget, prevRows, ahead = cands) 
 		if (best === Infinity) continue;
 		const t = hang ? hangBase - (-1 - row) * ROW_H - LAB_H : top0 + row * ROW_H;
 		placed.push({ ...c, w, l, r: l + w, t, b: t + LAB_H, row, hang });
-		if (!c.behind) normal++;
+		if (c.air) airs++; else if (!c.behind) normal++;
 	}
 	return placed;
 }
