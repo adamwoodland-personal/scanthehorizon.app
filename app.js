@@ -608,6 +608,7 @@ function modeUi() {
 	const b = $('modeBtn');
 	b.hidden = !compassOk(); // only on a phone whose compass works
 	b.textContent = S.aim === 'compass' ? 'Drag instead' : 'Use compass';
+	b.classList.toggle('lit', S.aim !== 'compass'); // "Use compass" stands out (xray.css)
 	hintUi();
 }
 $('modeBtn').addEventListener('click', () => {

@@ -148,6 +148,11 @@ body.cam .tool[aria-pressed="true"] { background: var(--accent); color: var(--ac
 .chip.place.approx { border-color: var(--accent); }
 .chip.place.approx .acc { color: var(--accent); font-weight: 600; }
 .chip.small { flex: none; font-size: 13px; padding: 3px 11px; min-height: 28px; }
+/* The two ways back to the compass stand out, filled in the accent as Camera is when on: "Lined up
+   by" (a drag has turned the drawing off the compass's north) and "Use compass" (dragging by choice;
+   app.js modeUi() sets .lit). They never show at once. By ID, so the camera view's dark glass
+   (body.cam .chip) doesn't win; --accent and --accent-ink are set for light, dark and camera. */
+#nudgeChip, #modeBtn.lit { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .tool { padding: 6px 11px; font-size: 13px; font-weight: 600; }
 .tool[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .tool:disabled { opacity: 0.5; cursor: progress; }
