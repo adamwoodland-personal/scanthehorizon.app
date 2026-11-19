@@ -10,12 +10,21 @@
 //
 // Angles: tan of the elevation angle t = (h − h0 − nearAllow·max(0, 1 − d/nearM))/d − d(1−k)/2R,
 // k = 0.13. Azimuth i·step clockwise from true north; every ray is a great circle.
+//
+// Ground that didn't load (no ring holds it: its tiles failed on both sources) is unknown, not sea.
+// It is drawn at 0 m, the least it can be (bar a few places below sea level), so what is drawn is
+// never higher than the truth: a place it hides is hidden whatever the missing ground is, but a ridge
+// may be missing from the skyline and a place drawn as in view may be hidden. So each ray also keeps
+// gapD, where its first such sample is (m; Infinity if none), and gap, 1 where ground there as high
+// as H_MAX could stand above the skyline drawn; visibility() flags a place with missing ground in
+// front of it (unsure), and the page draws those bearings and names as uncertain.
 import { R_EARTH, K_REFRACTION, mppAt, ringPx, sampleUV, ringForDistance, haversine, bearing } from './dem.js';
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI;
 const INV2PI = 1 / (2 * Math.PI), INV4PI = 1 / (4 * Math.PI);
 export const PROF_SCALE = 200;            // profile units per degree (Int16: ±163°, 0.005° steps)
 const PROF_NONE = -32768;                 // nothing in front yet
+export const H_MAX = 9000;                // m: higher than any ground on Earth (Everest 8,849 m)
 
 export const DEFAULTS = {
 	step: 0.2,          // degrees between rays (coarse 0.5)
@@ -47,7 +56,7 @@ export function sampleDistances(rings, o) {
 }
 
 // The panorama. rings: the ring list to draw from (finest first); obs: { lat, lon, h0 }.
-// Returns { n, step, alt, dist, sea, crests, profile, d, ri, ns, h0, ms }.
+// Returns { n, step, alt, dist, sea, gap, gapD, crests, profile, d, ri, ns, h0, ms }.
 export function computePanorama(rings, obs, opts = {}) {
 	const o = { ...DEFAULTS, ...opts };
 	const t0 = now();
@@ -72,6 +81,7 @@ export function computePanorama(rings, obs, opts = {}) {
 	}
 	const n = Math.round(360 / o.step);
 	const alt = new Float32Array(n), dist = new Float32Array(n), sea = new Uint8Array(n);
+	const gap = new Uint8Array(n), gapD = new Float32Array(n).fill(Infinity);
 	const crests = new Array(n);
 	const profile = o.profile ? new Int16Array(n * ns) : null;
 	const tProf = new Float64Array(ns), hProf = new Float32Array(ns);
@@ -94,7 +104,8 @@ export function computePanorama(rings, obs, opts = {}) {
 			uA[j] = (lam1 + Math.atan2(st * sd[i] * cp1, cd[i] - sp1 * sp2)) * INV2PI + 0.5;
 			vA[j] = 0.5 - Math.log((1 + sp2) / (1 - sp2)) * INV4PI;
 		}
-		// ---- terrain along the ray
+		// ---- terrain along the ray (gT: the highest angle ground that didn't load could reach, as tan)
+		let gT = -Infinity, gD = Infinity;
 		for (let i = 0; i < ns; i++) {
 			const j = ja[i], w = wa[i];
 			const u = uA[j] + (uA[j + 1] - uA[j]) * w, v = vA[j] + (vA[j + 1] - vA[j]) * w;
@@ -112,8 +123,14 @@ export function computePanorama(rings, obs, opts = {}) {
 					const A = T[k0], B = T[k0 + 1], C = T[k0 + sz], E = T[k0 + sz + 1];
 					const p = A + (B - A) * fx;
 					h = p + (C + (E - C) * fx - p) * fy;
-				} else h = sampleUV(rings, r, u, v);
-			} else h = sampleUV(rings, r, u, v);
+				} else h = sampleUV(rings, r, u, v, NaN);
+			} else h = sampleUV(rings, r, u, v, NaN);
+			if (h !== h) {                       // no ring holds it: drawn at 0 m, and noted
+				h = 0;
+				if (gD === Infinity) gD = d[i];
+				const g = (H_MAX - h0) * inv[i] - curv[i];
+				if (g > gT) gT = g;
+			}
 			hProf[i] = h;
 			tProf[i] = (h - h0) * inv[i] - curv[i];
 		}
@@ -145,9 +162,10 @@ export function computePanorama(rings, obs, opts = {}) {
 		else sky = { d: d[ns - 1], deg: Math.atan(M) * R2D, dip: 0, sky: true, sea: hProf[ns - 1] < 1, cut: true };
 		list.push(sky);
 		alt[a] = sky.deg; dist[a] = sky.d / 1000; sea[a] = sky.cut ? 2 : sky.sea ? 1 : 0;
+		gapD[a] = gD; gap[a] = gT > M ? 1 : 0;
 		crests[a] = list;
 	}
-	return { n, step: o.step, alt, dist, sea, crests, profile, d, ri, ns, h0, k: o.k, nearM: o.nearM, nearAllow: o.nearAllow, ms: now() - t0 };
+	return { n, step: o.step, alt, dist, sea, gap, gapD, crests, profile, d, ri, ns, h0, k: o.k, nearM: o.nearM, nearAllow: o.nearAllow, ms: now() - t0 };
 }
 
 // Link crests of neighbouring azimuths into ridge lines (greedy one-to-one by cost), then pack them
@@ -261,7 +279,7 @@ export function marchBearing(rings, obs, az, x, { k = K_REFRACTION, nearM = DEFA
 		const sp2 = sp1 * cdl + cp1 * sd * ct;
 		return [(lam1 + Math.atan2(st * sd * cp1, cdl - sp1 * sp2)) * INV2PI + 0.5, 0.5 - Math.log((1 + sp2) / (1 - sp2)) * INV4PI];
 	};
-	let M = -Infinity, Md = 0;
+	let M = -Infinity, Md = 0, gapD = Infinity;
 	r = 0;
 	let a0 = 0, a1 = 0, p0 = null, p1 = null;
 	for (let i = 0; i < n; i++) {
@@ -287,11 +305,21 @@ export function marchBearing(rings, obs, az, x, { k = K_REFRACTION, nearM = DEFA
 			const A = T[k0], B = T[k0 + 1], C = T[k0 + sz], E = T[k0 + sz + 1];
 			const q = A + (B - A) * fx;
 			h = q + (C + (E - C) * fx - q) * fy;
-		} else h = sampleUV(rings, r, u, v);
+		} else {
+			h = sampleUV(rings, r, u, v, NaN);
+			if (h !== h) { h = 0; if (gapD === Infinity) gapD = s; } // ground that didn't load: 0 m, as the pano
+		}
 		const t = (h - obs.h0 - nearAllow * Math.max(0, 1 - s / nearM)) / s - s * (1 - k) / (2 * R_EARTH);
 		if (t > M) { M = t; Md = s; }
 	}
-	return { blockAlt: M === -Infinity ? -90 : Math.atan(M) * R2D, blockDist: Md };
+	return { blockAlt: M === -Infinity ? -90 : Math.atan(M) * R2D, blockDist: Md, gapD };
+}
+
+// Is there ground that didn't load before distance x (m) on either ray beside bearing az?
+export function gapBefore(pano, az, x) {
+	if (!pano.gapD) return false;
+	const f = az / pano.step, a0 = Math.floor(f) % pano.n, a1 = (a0 + 1) % pano.n;
+	return Math.min(pano.gapD[a0], pano.gapD[a1]) < x;
 }
 
 // The blocking terrain in front of distance x on the ray nearest az, from the profile: its angle is
@@ -308,7 +336,8 @@ export function blockFromProfile(pano, az, x) {
 // Visibility of one target (SPEC §6.2): margin = target angle − highest terrain angle in front on
 // its exact bearing. The profile of the two rays either side decides when both agree by more than
 // the band plus `slack`; anything closer is re-marched on the exact bearing. A clearly hidden major
-// takes its blocker (angle, distance) from the profile of the nearest ray.
+// takes its blocker (angle, distance) from the profile of the nearest ray. unsure: ground that didn't
+// load lies in front of it (gapBefore, or the exact march), so if it isn't hidden it may be.
 // tgt: { lat, lon, h, kind, dist?, az?, major? }.
 export function visibility(rings, pano, obs, tgt, { slack = 0.1 } = {}) {
 	const dist = tgt.dist ?? haversine(obs.lat, obs.lon, tgt.lat, tgt.lon);
@@ -318,7 +347,7 @@ export function visibility(rings, pano, obs, tgt, { slack = 0.1 } = {}) {
 	const alt = altitudeOf(tgt.h, obs.h0, dist, pano.k);
 	const b = band(dist / 1000, cell);
 	const p = profileAt(pano, az, front);
-	let margin, exact = false, blockAlt = null, blockDist = null;
+	let margin, exact = false, blockAlt = null, blockDist = null, unsure = gapBefore(pano, az, front);
 	const lo = alt - p.hi, hi = alt - p.lo;
 	if (lo >= b + slack) margin = alt - p.mid;
 	else if (hi <= -b - slack) {
@@ -327,9 +356,10 @@ export function visibility(rings, pano, obs, tgt, { slack = 0.1 } = {}) {
 	} else {
 		const m = marchBearing(rings, obs, az, front, { k: pano.k, nearM: pano.nearM, nearAllow: pano.nearAllow });
 		margin = alt - m.blockAlt; exact = true; blockAlt = m.blockAlt; blockDist = m.blockDist;
+		if (m.gapD < front) unsure = true;
 	}
 	const status = margin >= b ? 'visible' : margin > -b ? 'marginal' : 'hidden';
-	return { az, dist, alt, margin, band: b, status, exact, blockAlt, blockDist, own, profLo: lo, profHi: hi };
+	return { az, dist, alt, margin, band: b, status, exact, blockAlt, blockDist, own, profLo: lo, profHi: hi, unsure };
 }
 
 // The drawn terrain angle at a peak's bearing just beyond its summit: what the drawing shows there,

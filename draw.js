@@ -148,17 +148,25 @@ export function cameraProjection(g, q, vfov, view) {
 // Which skyline samples are the sea horizon or flat ground (1), or cut off by the end of the range
 // (2): drawn faint and dashed. The engine says so in pano.sea; failing that, the sea horizon is
 // guessed: it sits at the dip angle for the eye's height above the sea, at the matching distance.
+// Where ground that didn't load could stand above the skyline (pano.gap), 3: dotted in the accent,
+// as the skyline there may be too low (app.js says so in a note that stays while it is drawn).
 const masks = new WeakMap();
 function skyMask(pano) {
 	let m = masks.get(pano);
 	if (m) return m;
-	if (pano.sea && pano.sea.length === pano.n) { masks.set(pano, pano.sea); return pano.sea; }
+	const gap = pano.gap && pano.gap.length === pano.n && pano.gap.some((x) => x) ? pano.gap : null;
+	if (pano.sea && pano.sea.length === pano.n) {
+		m = gap ? pano.sea.map((s, i) => (gap[i] ? 3 : s)) : pano.sea;
+		masks.set(pano, m);
+		return m;
+	}
 	m = new Uint8Array(pano.n);
 	const R = 6371008.8, k = 0.13, h = Math.max(1, pano.eye || 1);
 	const dip = Math.sqrt(2 * h * (1 - k) / R) * 180 / Math.PI, dH = Math.sqrt(2 * R * h / (1 - k)) / 1000;
 	for (let i = 0; i < pano.n; i++) {
 		const a = pano.alt[i], d = pano.dist[i];
-		if (d >= pano.rangeKm - 1.5) m[i] = 2;
+		if (gap && gap[i]) m[i] = 3;
+		else if (d >= pano.rangeKm - 1.5) m[i] = 2;
 		else if (Math.abs(a + dip) < 0.02 + 0.08 * dip && Math.abs(d - dH) < 0.3 * dH) m[i] = 1;
 	}
 	masks.set(pano, m);
@@ -288,18 +296,25 @@ export function drawTerrain(ctx, P, pano, ridgeParams, theme, g) {
 	}
 
 	// The skyline on top: the heaviest line, faint and dashed where it is the sea horizon or just
-	// the end of the range over flat ground.
+	// the end of the range over flat ground, and dotted in the accent where terrain didn't load.
 	ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+	const style = (a, b) => (a.m === 3 || b.m === 3 ? 2 : a.m !== 0 && b.m !== 0 ? 1 : 0);
 	for (const run of runs) {
 		let j = 0;
 		while (j < run.length - 1) {
-			const faint = run[j].m !== 0 && run[j + 1].m !== 0;
+			const s = style(run[j], run[j + 1]), faint = s === 1;
 			let e = j + 1;
-			while (e < run.length - 1 && (run[e].m !== 0 && run[e + 1].m !== 0) === faint) e++;
+			while (e < run.length - 1 && style(run[e], run[e + 1]) === s) e++;
 			ctx.beginPath();
 			ctx.moveTo(run[j].x, run[j].y);
 			for (let k = j + 1; k <= e; k++) ctx.lineTo(run[k].x, run[k].y);
-			if (faint) {
+			if (s === 2) {
+				ctx.setLineDash([0.5, 5]);
+				ctx.strokeStyle = theme.accent;
+				ctx.lineWidth = 3;
+				ctx.stroke();
+				ctx.setLineDash([]);
+			} else if (faint) {
 				ctx.setLineDash([5, 4]);
 				ctx.strokeStyle = run[j].m === 1 ? theme.sea : theme.muted;
 				ctx.lineWidth = 1.2;

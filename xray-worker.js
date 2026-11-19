@@ -27,7 +27,9 @@
 //   progress, pano (coarse at 0.5° once the z7–z9 rings are in, then full at 0.2°), labels, error,
 //   stats, and {type:'decode', id, blob} for the decode fallback. Arrays are transferred.
 //   pano also carries summit: {name, dist} when the eye was put on a summit (else null), and sea: Uint8Array(n), 1 where the skyline is sea or flat ground at 0 m, 2 where
-//   terrain is still rising at the range edge. Labels also carry wl (Wikipedia language count),
+//   terrain is still rising at the range edge, and gap: Uint8Array(n), 1 where ground that didn't load
+//   (its tiles failed on both sources) could stand above the skyline drawn (pano.js). Labels carry
+//   unsure: true where such ground is in front of a place (it may be hidden) or under it, and wl (Wikipedia language count),
 //   approx: true where GeoNames has the point on a whole arc-minute (up to ~0.9 km off), and for an
 //   airport (kind 'airport', from data/airports: SPEC §4.1) air, its size (1 major, 2 regional,
 //   3 airfield), and iata, its code where it has one. Airports in range are always sent: the page's
@@ -36,7 +38,7 @@
 //   the summit lift first, and again with it just before the labels.
 //   A places error can be partial: {type:'error', code:'places', fatal:false, partial:true, missing,
 //   total, message} means names from the other tiles are in the labels that follow.
-//   The coarse pano is skipped when under 80% of the coarse rings loaded (it would draw holes as sea).
+//   The coarse pano is skipped when under 80% of the coarse rings loaded (it would be mostly holes).
 //
 // Pipeline for 'run': decode canary (once) → ring plan by metres per pixel (dem.js), auto range
 // (150 km, or 250 km when the z7 ring shows terrain above 1,500 m) → coarse rings (z7–z9) → coarse
@@ -64,7 +66,8 @@ export const PLACES_GRACE_MS = 1500;
 // waited for this much longer at most, and left out of this view if still not in (or if they fail:
 // the names are what matter, so no error is reported for them).
 export const AIRPORTS_GRACE_MS = 2000;
-// The coarse pano needs this share of the coarse rings' tiles (holes would read as flat sea).
+// The coarse pano needs this share of the coarse rings' tiles (holes are drawn at 0 m and flagged:
+// pano.js gap).
 const COARSE_MIN_SHARE = 0.8;
 const PENDING = Symbol('pending');
 // Saving an area: downloads at a time (fewer than a view's, so a view started meanwhile isn't
@@ -384,7 +387,7 @@ export class Engine {
 			if (fails.length * 5 > st.total) throw fatal(fails);
 			if (coarse.length) {
 				D.attachTiles(coarse, this.store);
-				// Missing coarse tiles would draw as flat sea: no rough skyline unless most of them are in.
+				// Missing coarse tiles are unknown ground: no rough skyline unless most of them are in.
 				if (share(coarse, this.store) >= COARSE_MIN_SHARE) {
 					const t1 = now();
 					const obs = this.observer(coarse);
@@ -821,10 +824,11 @@ export class Engine {
 		wall.labels = now() - T0;
 	}
 	postPano(stage, pano, ridges, obs, rangeKm, source) {
-		const msg = { type: 'pano', gen: this.gen, stage, step: pano.step, n: pano.n, alt: pano.alt, dist: pano.dist, sea: pano.sea,
+		const msg = { type: 'pano', gen: this.gen, stage, step: pano.step, n: pano.n, alt: pano.alt, dist: pano.dist, sea: pano.sea, gap: pano.gap,
 			ground: Math.round(obs.ground * 10) / 10, eye: Math.round(obs.h0 * 10) / 10, summit: obs.summit, rangeKm, ridges, source };
-		if (this.env.keepCopies) msg.alt = pano.alt.slice(), msg.dist = pano.dist.slice(), msg.sea = pano.sea.slice();
-		this.post(msg, this.env.keepCopies ? [] : [pano.alt.buffer, pano.dist.buffer, pano.sea.buffer, ridges.pts.buffer, ridges.starts.buffer, ridges.dip.buffer, ridges.len.buffer, ridges.med.buffer]);
+		if (this.env.keepCopies) msg.alt = pano.alt.slice(), msg.dist = pano.dist.slice(), msg.sea = pano.sea.slice(), msg.gap = pano.gap.slice();
+		// (gapD stays here: the labels step reads it after this)
+		this.post(msg, this.env.keepCopies ? [] : [pano.alt.buffer, pano.dist.buffer, pano.sea.buffer, pano.gap.buffer, ridges.pts.buffer, ridges.starts.buffer, ridges.dip.buffer, ridges.len.buffer, ridges.med.buffer]);
 	}
 	sourceOf(rings) {
 		const seen = new Set();

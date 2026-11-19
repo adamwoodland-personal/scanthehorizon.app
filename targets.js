@@ -377,8 +377,11 @@ export function candidates({ records, obs, rangeKm, rings, snaps = null, all = f
 		if (isRelief(c.kind) && c.ele != null) { const s = snaps.get(c.id); c.h = Math.max(c.ele, s && s.dem > -1e9 ? s.dem : -Infinity); }
 		else {
 			// from the ring the drawing uses at that distance, so a place on a plain in view isn't
-			// "hidden" by a few metres of difference between rings
-			c.h = sampleAt(rings, ringForDistance(rings, c.dist), c.lat, c.lon) + (isSettlement(c.kind) || c.air ? 10 : 0);
+			// "hidden" by a few metres of difference between rings. Where its ground didn't load, 0 m as
+			// the drawing has it, and unsure: it may stand higher.
+			let g = sampleAt(rings, ringForDistance(rings, c.dist), c.lat, c.lon, NaN);
+			if (g !== g) { g = 0; c.unsure = true; }
+			c.h = g + (isSettlement(c.kind) || c.air ? 10 : 0);
 		}
 		c.major = isMajor(c.kind, c.code, c.pop, c.ele || 0, c.wl);
 		keep.push(c);
@@ -422,6 +425,9 @@ export function buildLabels({ records, obs, rangeKm, rings, pano, snaps = null, 
 			blockDist: v.status === 'hidden' ? round(v.blockDist / 1000, 3) : null, wiki: c.wiki, cc: c.cc,
 			wl: c.wl, approx: c.rounded || undefined,
 			overHorizon: overHorizon || undefined,
+			// Part of the terrain didn't load: in front of it (it may be hidden; one hidden by what did
+			// load is hidden anyway), or under it (it may stand higher, so even hidden it may be in view).
+			unsure: (c.unsure || (v.unsure && v.status !== 'hidden')) || undefined,
 			air: c.air || undefined,   // an airport's size: 1 major, 2 regional, 3 airfield (AIR_SIZE)
 			iata: c.iata || undefined, // and its IATA code, where it has one (BNE)
 		};
@@ -441,6 +447,6 @@ export function buildLabels({ records, obs, rangeKm, rings, pano, snaps = null, 
 	}
 	const out = shown.concat(hidden).sort((a, b) => b.score - a.score);
 	return { items: out, stats: { records: records.length, inRange, tested: keep.length, exact, inView: items.length - items.filter((L) => L.status === 'hidden').length,
-		hiddenMajors: items.filter((L) => L.status === 'hidden').length, sent: out.length } };
+		hiddenMajors: items.filter((L) => L.status === 'hidden').length, sent: out.length, unsure: out.filter((L) => L.unsure).length } };
 }
 const round = (x, n) => x == null ? x : Math.round(x * 10 ** n) / 10 ** n;

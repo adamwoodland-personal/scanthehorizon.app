@@ -26,6 +26,8 @@
 //
 // Storage: Int16 whole metres for z ≤ 12, Float32 for z13/14. 404 rule (Mapterhorn): at z ≤ 12 a
 // 404 is sea (0 m); at z ≥ 13 it means "no archive here", and z12 is used for that area instead.
+// A tile that failed on both sources is no tile: where no ring holds the ground, it is unknown, not
+// sea (sampleUV's `none`), and the drawing and the names say so.
 
 export const R_EARTH = 6371008.8;          // mean Earth radius, metres (distances, curvature)
 export const K_REFRACTION = 0.13;          // refraction coefficient (drop = d²(1−k)/2R)
@@ -198,8 +200,11 @@ export function ringPx(R, u) {
 	return px;
 }
 // Bilinear height at Web Mercator (u, v) from ring r, or from the next coarser ring where a tile is
-// missing (not loaded yet, a z13 "no archive" hole, or outside the ring). 0 if no ring has it.
-export function sampleUV(rings, r, u, v) {
+// missing (not loaded yet, a z13 "no archive" hole, or outside the ring). `none` (0 unless given) if
+// no ring has it: ground that didn't load at all, which is not the sea (a 404 at z ≤ 12 is a real
+// all-sea tile, seaTile, and samples as 0 m). The panorama and the label tests pass NaN to tell the two
+// apart, and flag what such ground could change (pano.js gap, gapD; targets.js unsure).
+export function sampleUV(rings, r, u, v, none = 0) {
 	for (; r < rings.length; r++) {
 		const R = rings[r];
 		const px = ringPx(R, u), py = v * R.S - 0.5 - R.ty0 * R.size;
@@ -209,9 +214,9 @@ export function sampleUV(rings, r, u, v) {
 		const p = a + (b - a) * fx;
 		return p + (c + (d - c) * fx - p) * fy;
 	}
-	return 0;
+	return none;
 }
-export const sampleAt = (rings, r, lat, lon) => sampleUV(rings, r, lonToU(lon), latToV(lat));
+export const sampleAt = (rings, r, lat, lon, none = 0) => sampleUV(rings, r, lonToU(lon), latToV(lat), none);
 
 // The finest ring holding a real tile at (lat, lon) (ring order is finest first), or -1.
 export function finestAt(rings, lat, lon) {

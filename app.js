@@ -134,7 +134,7 @@ const S = {
 	hy: null, ex: null,         // sign view: the horizon's y and the hills' exaggeration now, eased towards their targets
 	detail: prefs.detail,
 	gen: 0,                     // the worker run in progress; older answers are dropped
-	pano: null, labels: [], order: [], labelsIn: false, placesErr: false, placesPartial: false, terrainErr: null, terrainWarn: null, stats: null, progress: null, awsUsed: false,
+	pano: null, labels: [], order: [], labelsIn: false, placesErr: false, placesPartial: false, terrainErr: null, terrainWarn: null, terrainToast: false, stats: null, progress: null, awsUsed: false,
 	ready: false, started: false, stream: null, entry: new Map(),
 	selected: null,             // the label tapped, by id
 	placed: [], prevRows: new Map(),
@@ -200,10 +200,11 @@ function startRun() {
 	if (!worker) { cardUi(); return; }
 	if (S.gen) worker.postMessage({ type: 'cancel', gen: S.gen });
 	const gen = ++S.gen;
-	S.ready = false; S.readyPending = false; S.labelsIn = false; S.placesErr = false; S.placesPartial = false; S.terrainErr = null; S.terrainWarn = null; S.stats = null; S.progress = null;
+	S.ready = false; S.readyPending = false; S.labelsIn = false; S.placesErr = false; S.placesPartial = false; S.terrainErr = null; S.terrainWarn = null; S.terrainToast = false; S.stats = null; S.progress = null;
 	S.heardAt = performance.now(); S.stalled = false;
 	// Keep the old drawing while a nearby fix replaces it; clear it for somewhere new.
 	if (!S.pano || !S.pano.place || km(S.pano.place.lat, S.pano.place.lon, S.place.lat, S.place.lon) > 2) { S.pano = null; S.labels = []; S.order = []; S.placed = []; }
+	gapUi();
 	const conn = navigator.connection;
 	const lite = prefs.lite || !!(conn && conn.saveData);
 	worker.postMessage({ type: 'run', gen, lat: S.place.lat, lon: S.place.lon, agl: aglMetres(), rangeKm: prefs.range, lite, source: S.source || 'auto', facing: wrap360(S.look.az), summit: prefs.summit });
@@ -262,6 +263,8 @@ function onWorker(m) {
 		if (m.stage === 'coarse' && S.pano && S.pano.stage === 'full' && S.pano.place && km(S.pano.place.lat, S.pano.place.lon, S.place.lat, S.place.lon) < 2) break;
 		m.place = { lat: S.place.lat, lon: S.place.lon };
 		S.pano = m;
+		gapUi();
+		if (m.stage === 'full' && S.terrainToast) { S.terrainToast = false; if (!gapDeg()) toast('Part of the terrain didn’t load: the drawing may have gaps'); }
 		if (m.source === 'aws' || m.source === 'mixed') { S.awsUsed = true; $('awsCredit').hidden = false; }
 		S.terrainErr = null;
 		if (m.stage === 'full') { progressUi(true); summitNote(m.summit); }
@@ -289,12 +292,17 @@ function onWorker(m) {
 			S.placesErr = true;
 			toast('The place names didn’t load: drawing the view without them');
 		} else if (!m.fatal) {
+			// Where it matters, the full panorama (it follows this) flags the bearings and gapUi keeps a
+			// note up, which says it all: the toast would only repeat it over the note. So the toast waits
+			// for that panorama and is shown only if it flags nothing (coarser rings held that ground, or
+			// nothing there could show), for that case alone.
 			S.terrainWarn = m.message || 'error';
-			toast('Part of the terrain didn’t load: the drawing may have gaps');
+			S.terrainToast = true;
 		} else {
 			// Nothing to draw: the error card, not a panorama made from missing terrain under it.
 			S.terrainErr = m;
 			S.pano = null; S.labels = []; S.order = []; S.placed = [];
+			gapUi();
 			progressUi(true);
 		}
 		S.dirty = true;
@@ -329,6 +337,23 @@ function layoutOrder(items) {
 function checkReady() {
 	S.readyPending = !!(S.pano && S.pano.stage === 'full' && (S.labelsIn || S.placesErr));
 	if (S.terrainErr) S.readyPending = true;
+}
+// Terrain that didn't load (its tiles failed on both sources) is drawn at 0 m, which can leave a
+// ridge out of the skyline and a hidden place looking in view. The worker marks the bearings where
+// that could be so (pano.gap: drawn dotted in the accent, draw.js) and the names (unsure: a dashed
+// leader, and the card says so). This note stays up for as long as such a drawing is shown, rather
+// than a toast that is gone in three seconds.
+const gapAt = (az, P = S.pano) => !!(P && P.gap && P.gap.length === P.n && P.gap[((Math.round(az / P.step) % P.n) + P.n) % P.n]);
+function gapDeg(P = S.pano) {
+	if (!P || !P.gap || P.gap.length !== P.n) return 0;
+	let k = 0;
+	for (const x of P.gap) k += x;
+	return k * P.step;
+}
+function gapUi() {
+	const el = $('gapNote'), deg = gapDeg();
+	el.hidden = !deg;
+	if (deg) el.textContent = 'Part of the terrain didn’t load: hills may be missing where the skyline is dotted orange.';
 }
 
 // Facing at the start, without a compass: the way with the most worth naming in one screen.
@@ -1386,7 +1411,7 @@ function listUi() {
 		bb.className = 'rb'; bb.textContent = `${Math.round(L.az) % 360}° ${point(L.az)}`;
 		n.className = 'rn'; n.textContent = L.name + (L.sub ? ` (${L.sub})` : '') + (L.iata ? ` (${L.iata})` : '');
 		const h = heightText(L);
-		w.className = 'rw'; w.textContent = [kindWord(L), `${kmText(L.dist)} away`, h && `${h} high`, L.status === 'hidden' ? behindWords(L) : STATUS[L.status]].filter(Boolean).join(' · ');
+		w.className = 'rw'; w.textContent = [kindWord(L), `${kmText(L.dist)} away`, h && `${h} high`, statusWords(L)].filter(Boolean).join(' · ');
 		b.append(bb, n, w);
 		b.addEventListener('click', () => {
 			closeSheet($('listSheet'));
@@ -1409,6 +1434,7 @@ function aboutUi() {
 		+ `Worked out in ${(total / 1000).toFixed(1)} s (download ${nf(ms.fetch || 0)} ms, decoding ${nf(ms.decode || 0)} ms, first skyline ${nf(ms.coarse || 0)} ms, full panorama ${nf(ms.full || 0)} ms, names ${nf(ms.labels || 0)} ms). `
 		+ (p.summit ? `Looking from the top of ${p.summit.name}, ${nf(p.summit.dist)} m from the place chosen. ` : '')
 		+ (s.areaLess ? 'Inside a saved area that keeps less detail close by, so the nearest hills come from coarser data. ' : '')
+		+ (gapDeg() ? `Part of the terrain didn’t load: over ${nf(gapDeg())}° of the view, where the skyline is dotted orange, hills may be missing, and names with a dashed line may be hidden. ` : '')
 		+ `Eye ${nf(p.eye)} m above sea level (the ground there is ${nf(p.ground)} m${aglMetres() ? `, plus ${aglMetres()} m up` : ''}).`;
 }
 
@@ -1434,28 +1460,35 @@ const shortName = (n) => n.replace(/^Mount /, 'Mt ');
 // What hides a big place: the hills, or just the curve of the Earth: when the place is below the
 // sea horizon itself (the worker's overHorizon), or what stands in front of it is the sea or flat
 // ground at sea level. The blocker's height comes back from its altitude and distance with the
-// engine's curvature and refraction (SPEC §3: drop = d²(1 − k)/2R).
+// engine's curvature and refraction (SPEC §3: drop = d²(1 − k)/2R). Neither, when the ground under
+// it didn't load (unsure: it may stand higher than it was tested at): it may be hidden.
 function behindWords(L) {
+	if (L.unsure) return 'may be hidden';
 	if (L.overHorizon) return 'over the horizon';
 	if (!S.pano || !Number.isFinite(L.blockAlt) || !(L.blockDist > 0)) return 'behind the hills';
 	const d = L.blockDist * 1000, h = S.pano.eye + d * Math.tan(L.blockAlt * Math.PI / 180) + d * d * (1 - 0.13) / (2 * 6371008.8);
 	return h < 4 ? 'over the horizon' : 'behind the hills';
 }
+// How a place stands: in view, just in view, behind the hills (or over the horizon), or "may be
+// hidden" where terrain in front of it or under it didn't load (the worker's unsure).
+const statusWords = (L) => (L.status === 'hidden' ? behindWords(L) : L.unsure ? 'may be hidden' : STATUS[L.status] || '');
 // The card for one place. off: how far it is from the centre (degrees, + to the right) when it's
 // named as the nearest one drawn rather than the one ahead; it then leads the kicker.
 function cardFor(L, off = null, hold = 1000) {
 	const kind = kindWord(L);
 	const dir = off === null ? '' : `${Math.max(1, Math.round(Math.abs(off)))}° to your ${off < 0 ? 'left' : 'right'} · `;
-	setText('cKicker', `${dir}${kind} · ${L.status === 'hidden' ? behindWords(L) : STATUS[L.status] || ''}`);
+	setText('cKicker', `${dir}${kind} · ${statusWords(L)}`);
 	setText('cName', L.name);
 	setText('cSub', L.sub || '');
 	const bits = [`${kmText(L.dist)} away`];
+	// (early, as the detail is cut to two lines)
+	if (L.unsure) bits.push(L.status === 'hidden' ? 'the ground there didn’t load, so it may be in view' : 'part of the terrain didn’t load, so it may be hidden');
 	const h = heightText(L);
 	if (h) bits.push(`${h} high`);
 	else if (L.pop > 0) bits.push(`about ${nf(L.pop)} people`);
 	if (L.iata) bits.push(`airport code ${L.iata}`);
 	bits.push(`bearing ${Math.round(L.az) % 360}° ${point(L.az)}`);
-	if (L.status === 'hidden' && L.blockDist) bits.push(behindWords(L) === 'over the horizon' ? 'hidden by the curve of the Earth' : `hidden by the ground ${kmText(L.blockDist)} away`);
+	if (L.status === 'hidden' && L.blockDist && !L.unsure) bits.push(behindWords(L) === 'over the horizon' ? 'hidden by the curve of the Earth' : `hidden by the ground ${kmText(L.blockDist)} away`);
 	if (L.approx) bits.push('its position on the map is approximate');
 	setText('cDetail', bits.join(' · '));
 	const wiki = $('cWiki');
@@ -1518,9 +1551,10 @@ function cardUi() {
 	if (best) { cardFor(best); return; }
 	if (near) { cardFor(near, nearOff); return; }
 	// Nothing named this way: say what the skyline here is (pano.sea: 1 the sea horizon, 2 cut off
-	// by the end of the range over flat ground).
+	// by the end of the range over flat ground; pano.gap: terrain that didn't load could be above it).
 	const P = S.pano, i = ((Math.round(az / P.step) % P.n) + P.n) % P.n, sea = P.sea && P.sea.length === P.n ? P.sea[i] : 0;
-	const what = sea === 1 ? `The sea horizon, ${kmText(P.dist[i])} away` : sea === 2 ? `Flat to the edge of the ${nf(P.rangeKm)} km range` : `The skyline here is ${kmText(P.dist[i])} away`;
+	const what = gapAt(az) ? 'Part of the terrain this way didn’t load: hills may be missing'
+		: sea === 1 ? `The sea horizon, ${kmText(P.dist[i])} away` : sea === 2 ? `Flat to the edge of the ${nf(P.rangeKm)} km range` : `The skyline here is ${kmText(P.dist[i])} away`;
 	setText('cKicker', `Facing ${Math.round(az) % 360}° ${point(az)}`);
 	setText('cName', S.labelsIn || S.placesErr ? 'Nothing named this way' : 'Finding the names…');
 	setText('cDetail', `${what}${S.placesErr ? ' · place names didn’t load' : ''}`);
@@ -1637,7 +1671,8 @@ function draw() {
 		// Every label is the name and how far away it is, whatever it is (Adam: a height on a peak and
 		// a distance on a town gave no clue which a number was). Tapping it opens the card with the rest.
 		const text = shortName(L.name), ht = kmText(L.dist);
-		cands.push({ key: 'l' + L.id, L, ax: p.x, ay: p.y, w: labelWidth(text, ht), text, ht, dashed: L.status === 'marginal', air: L.kind === 'airport' });
+		// (dashed: only just in view, or perhaps not, where terrain in front of it didn't load)
+		cands.push({ key: 'l' + L.id, L, ax: p.x, ay: p.y, w: labelWidth(text, ht), text, ht, dashed: L.status === 'marginal' || !!L.unsure, air: L.kind === 'airport' });
 	}
 	// Look-ahead for the layout: every label the slider could admit, on screen, in the same order.
 	const ahead = cands.filter((c) => c.behind || c.L.id === sel);
@@ -1747,7 +1782,7 @@ window.__XRAY = {
 	setWidth,
 	labels() {
 		return S.placed.map((p) => ({ name: p.L.name, text: p.text + (p.ht ? ' ' + p.ht : ''), id: p.L.id, x: p.ax, y: p.ay, box: { l: p.l, t: p.t, r: p.r, b: p.b }, row: p.row,
-			status: p.L.status, kind: p.L.kind, major: !!p.L.major, behind: !!p.behind, dashed: !!p.dashed, hang: !!p.hang, az: p.L.az }));
+			status: p.L.status, kind: p.L.kind, major: !!p.L.major, behind: !!p.behind, dashed: !!p.dashed, hang: !!p.hang, az: p.L.az, unsure: !!p.L.unsure }));
 	},
 	pano() { return S.pano; },
 	stats() { return S.stats; },
