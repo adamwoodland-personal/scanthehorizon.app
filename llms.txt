@@ -12,10 +12,15 @@ Technical: static files only (index.html, xray.css, app.js and draw.js for the p
 
 ## Links
 
-- [Scan the Horizon](https://scanthehorizon.app/): the page itself; its About sheet explains how it works and answers questions (what it does, how it knows what is on the horizon, accuracy, privacy, offline use)
+- [Scan the Horizon](https://scanthehorizon.app/): the page itself; its About sheet explains how it works and answers questions (what it does, how it knows what is on the horizon, how far away the horizon is, accuracy, privacy, offline use)
+- [What you can see from the Glass House Mountains Lookout](https://scanthehorizon.app/glass-house-mountains/): the app's own drawing of the lookout's view, with every peak and hill in view within 25 km by bearing, distance and height, worked out by the app
+- [How far can you see?](https://scanthehorizon.app/how-far-can-you-see/): the distance to the horizon from any height, and how much of a far-off mountain the curve of the Earth hides, with two calculators using the app's own constants (refraction coefficient 0.13)
+- [Peak finder apps compared](https://scanthehorizon.app/peak-finder-apps/): PeakFinder, PeakVisor, HeyWhatsThat and Scan the Horizon side by side (price, platforms, offline use, what each names), checked on each product's own pages, with Peakery explained
 
 ## Related
 
+- [What's Across](https://whatsacross.com/): what lies across the ocean from any coastline, by the same author
+- [Look Up and Down](https://lookupanddown.com/): the sky above you and the far side of the world below, by the same author
 - [Adam's Arcade](https://games.adamwoodland.com/): all of the author's free browser games and tools
 - [Adam Woodland](https://adamwoodland.com/): the author, an OT/ICS cybersecurity consultant; this site is a side project
 

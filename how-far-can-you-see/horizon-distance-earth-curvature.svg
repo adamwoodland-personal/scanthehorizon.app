@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" role="img" aria-labelledby="t d">
+<title id="t">How far you can see</title>
+<desc id="d">An eye a little above a curved sea. The line of sight touches the sea at the horizon; beyond it the curve drops away, so the lower part of a far mountain is hidden below the line of sight.</desc>
+<rect width="960" height="420" fill="#fbfaf6"/>
+<path d="M -20 351.7 A 900 900 0 0 1 980 351.7 L 980 420 L -20 420 Z" fill="#5f84a3" fill-opacity="0.85"/>
+<path d="M 700 229.3 L 775 155.2 L 850 281.6 Z" fill="#9aa0a6" stroke="#3a3f45" stroke-width="2" stroke-linejoin="round"/>
+<line x1="150.0" y1="198.7" x2="950" y2="201.9" stroke="#a8501c" stroke-width="3" stroke-dasharray="10 7"/>
+<line x1="150" y1="207.7" x2="150" y2="262.7" stroke="#23272c" stroke-width="2"/>
+<circle cx="150.0" cy="198.7" r="9" fill="#23272c"/>
+<text x="138" y="238.7" text-anchor="end" font-family="system-ui, sans-serif" font-size="24" fill="#23272c">eye height</text>
+<circle cx="483.6" cy="200.0" r="7" fill="#a8501c"/>
+<text x="483.6" y="156.0" text-anchor="middle" font-family="system-ui, sans-serif" font-size="28" font-weight="700" fill="#a8501c">the horizon</text>
+<text x="170.0" y="184.8" font-family="system-ui, sans-serif" font-size="24" fill="#23272c">distance to the horizon</text>
+<line x1="868" y1="201.5" x2="868" y2="287.9" stroke="#23272c" stroke-width="2"/>
+<line x1="859" y1="201.5" x2="877" y2="201.5" stroke="#23272c" stroke-width="2"/>
+<line x1="859" y1="287.9" x2="877" y2="287.9" stroke="#23272c" stroke-width="2"/>
+<text x="882" y="251.7" font-family="system-ui, sans-serif" font-size="22" fill="#23272c">hidden</text>
+<text x="480" y="398" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" fill="#ffffff">Not to scale: the curve is exaggerated so it shows</text>
+</svg>

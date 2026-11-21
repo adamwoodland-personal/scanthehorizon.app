@@ -931,6 +931,10 @@ document.addEventListener('visibilitychange', () => {
 // Native modal dialogs (showModal): focus moves in, stays in, the rest is inert until they close,
 // and Escape closes them. The start screen can't be dismissed without choosing how to start.
 // Focus goes back to whatever opened a dialog.
+// The start screen ships open in the HTML (its heading and words then show without scripts, and to search
+// engines that don't run them). showModal() refuses a dialog that is already open, so close it here; it
+// opens again as a modal at the end of this file (or the save-link dialog opens instead).
+if ($('intro').open) $('intro').close();
 let lastFocus = null;
 function openSheet(el) {
 	if (!lastFocus || !document.querySelector('dialog[open]')) lastFocus = document.activeElement;

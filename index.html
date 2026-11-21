@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Scan the Horizon: name the hills, towns and islands you can see</title>
-<meta name="description" content="Hold up your phone to see the hills, towns, islands and landmarks on your horizon named, with how far away each is, drawn like the sign at a lookout. Free.">
+<title>Scan the Horizon: name the mountains and hills you can see</title>
+<meta name="description" content="Hold up your phone and the mountains, hills, towns and islands on your horizon are named, with how far away each is. Free, in your browser, no app to install.">
 <link rel="canonical" href="https://scanthehorizon.app/">
+<meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <meta property="og:type" content="website">
@@ -16,12 +17,13 @@
 <meta property="og:image" content="https://scanthehorizon.app/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The view from the Glass House Mountain Lookout drawn like the lookout's sign: grey ridges, with Mt Ngungun, Caloundra, Mt Cooee, Mt Tibrogargan and other places named in ovals with their distances">
+<meta property="og:image:alt" content="The view from the Glass House Mountains Lookout drawn like the lookout's sign: grey ridges, with Mt Ngungun, Caloundra, Mt Cooee, Mt Tibrogargan and other places named in ovals with their distances">
 <meta property="og:locale" content="en_GB">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Scan the Horizon: the hills, towns and islands you can see, named">
 <meta name="twitter:description" content="Hold up your phone and the view around you is drawn like the sign at a lookout, with every hill, town and island named and how far away it is.">
 <meta name="twitter:image" content="https://scanthehorizon.app/og-image.png">
+<meta name="twitter:image:alt" content="The view from the Glass House Mountains Lookout drawn like the lookout's sign: grey ridges, with Mt Ngungun, Caloundra, Mt Cooee, Mt Tibrogargan and other places named in ovals with their distances">
 <meta name="theme-color" content="#f3f1ea" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1b2d" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -110,6 +112,14 @@
    "acceptedAnswer": {
     "@type": "Answer",
     "text": "It downloads elevation data for the land around you, out to 150 km (250 km near high mountains), and works out, bearing by bearing, which hills and ridges stand against the sky. It allows for the curve of the Earth and for refraction, the slight bending of light by the air that lets you see a little further than a straight line would. Each named place is then checked against the ground in front of it: a town behind a hill is left off, and a big one gets an arrow over the hill that hides it."
+   }
+  },
+  {
+   "@type": "Question",
+   "name": "How far away is the horizon?",
+   "acceptedAnswer": {
+    "@type": "Answer",
+    "text": "Standing at the water's edge, with your eyes about 1.7 m up, the sea horizon is about 5.0 km away. From 100 m up it is about 38 km, and from 1,000 m about 121 km. The guide How far can you see? works it out for any height, and whether a far-off mountain clears the curve."
    }
   },
   {
@@ -234,11 +244,14 @@
 <div id="saProbe" aria-hidden="true"></div>
 <p id="cardSr" class="sr" aria-live="polite"></p>
 
-<dialog id="intro" class="sheet" aria-labelledby="introTitle">
+<!-- Open in the HTML, so its heading and words show without scripts (and to search engines that don't run
+     them); app.js closes it and opens it again as a modal. xray.css makes the two look the same. -->
+<dialog id="intro" class="sheet" aria-labelledby="introTitle" open>
 	<div class="inner">
 		<h1 id="introTitle">Scan the Horizon</h1>
 		<p class="lead">The hills, mountains, towns and islands around you, named, with how far away they are, drawn like the sign at a lookout. Hold your phone up and the names turn with you.</p>
 		<p id="introHint" class="hint">It works indoors too: the drawing is made from elevation data, as if walls, trees and buildings were glass.</p>
+		<noscript><p class="hint">Scan the Horizon needs JavaScript to draw the view.</p></noscript>
 		<button id="startGps" class="go" type="button" autofocus>Use my location</button>
 		<button id="startLink" class="plain" type="button" hidden>Look from <span id="startLinkName"></span></button>
 		<button id="startSearch" class="plain" type="button">Choose a place</button>
@@ -393,6 +406,7 @@
 		<p>Scan the Horizon draws the hills, mountains and coast around you, with the towns, peaks and landmarks named, the way the sign at a lookout does. With a compass the drawing turns as you turn; tap Camera to see it over the live picture.</p>
 		<p>Drawn from elevation data as if trees and buildings were glass: the terrain is the shape of the land, so a place behind a building or a forest still shows. A big place hidden behind a hill gets an arrow over the hill that hides it.</p>
 		<p>Bearings are from true north: the phone's magnetic compass is corrected for the local difference between the two (about 11° around Brisbane). Steel and electronics indoors, or a car, can still throw the compass off by a few degrees: drag sideways to line the drawing up, and tap “Lined up by” to undo it. The Detail slider chooses how many names to show.</p>
+		<p>Guides: <a href="/glass-house-mountains/">what you can see from the Glass House Mountains Lookout</a> · <a href="/how-far-can-you-see/">how far you can see, and the distance to the horizon</a> · <a href="/peak-finder-apps/">peak finder apps compared</a></p>
 		<h3 id="faq">Questions</h3>
 		<!-- Keep these word for word the same as the FAQPage JSON-LD in <head> (page-test.js checks). -->
 		<div class="faq">
@@ -400,6 +414,8 @@
 			<p>It draws the view around you the way the sign at a lookout does: the hills, mountains and coast in grey, with the towns, peaks, islands, lakes, landmarks and airports named and how far away each one is. Hold your phone up and the drawing turns as you turn. Tap a name for its height or population, a link to Wikipedia, and Go there, to see the view from it; the Detail slider chooses how many names to show.</p>
 			<h4>How does it know what is on the horizon?</h4>
 			<p>It downloads elevation data for the land around you, out to 150 km (250 km near high mountains), and works out, bearing by bearing, which hills and ridges stand against the sky. It allows for the curve of the Earth and for refraction, the slight bending of light by the air that lets you see a little further than a straight line would. Each named place is then checked against the ground in front of it: a town behind a hill is left off, and a big one gets an arrow over the hill that hides it.</p>
+			<h4>How far away is the horizon?</h4>
+			<p>Standing at the water's edge, with your eyes about 1.7 m up, the sea horizon is about 5.0 km away. From 100 m up it is about 38 km, and from 1,000 m about 121 km. The guide <a href="/how-far-can-you-see/">How far can you see?</a> works it out for any height, and whether a far-off mountain clears the curve.</p>
 			<h4>Why isn't a hill I can see named, and what about trees and buildings?</h4>
 			<p>Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown.</p>
 			<h4>Does it work indoors, or without a compass?</h4>
@@ -423,6 +439,7 @@
 		<p>Place search: Photon (© OpenStreetMap contributors) and Open-Meteo.</p>
 		<h3>How this view was made</h3>
 		<p id="howMade" class="small">Nothing drawn yet.</p>
+		<p>To see what lies across the sea from a coast, try <a href="https://whatsacross.com/">What's Across</a>; for the sky above you and the far side of the world below, <a href="https://lookupanddown.com/">Look Up and Down</a>.</p>
 		<p class="note">More tools at <a href="https://games.adamwoodland.com/">Adam's Arcade</a> · Made by <a href="https://adamwoodland.com/">Adam Woodland</a><br>Design, code and content developed with the assistance of AI (Anthropic Claude).</p>
 	</div>
 </dialog>
