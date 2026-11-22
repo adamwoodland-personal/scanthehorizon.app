@@ -39,7 +39,14 @@ export const DEFAULTS = {
 	nearM: 300,         // within nearM the terrain is lowered by up to nearAllow metres (fading to 0),
 	nearAllow: 6,       // so DEM noise next to the observer can't black out the view
 	profile: true,      // keep the running-max profile (full pano)
+	bands: 0,           // height lines: every this many metres (0: none; the full pano asks for BAND_M)
+	bandKm: 3,          // … on ground in view within this distance
 };
+// Height lines (the setting "Height lines on hills nearby", Adam 2026-11-22): where the ground in view
+// crosses each multiple of BAND_M metres, within BAND_KM. Farther out the ground in view is mostly a
+// thin strip under each ridge, and the lines only crowd the ridge lines (seen over his 337° photo from
+// the Tibrogargan track).
+export const BAND_M = 50, BAND_KM = 3;
 
 // Sample distances shared by every ray, and the ring each one is drawn from.
 export function sampleDistances(rings, o) {
@@ -56,7 +63,11 @@ export function sampleDistances(rings, o) {
 }
 
 // The panorama. rings: the ring list to draw from (finest first); obs: { lat, lon, h0 }.
-// Returns { n, step, alt, dist, sea, gap, gapD, crests, profile, d, ri, ns, h0, ms }.
+// Returns { n, step, alt, dist, sea, gap, gapD, crests, profile, d, ri, ns, h0, ms }, and with
+// opts.bands the height-line crossings: cross = { start (Uint32Array n + 1), alt (deg), d (m),
+// lv (the height in units of `bands`) }, ray a's crossings being start[a] … start[a + 1] − 1, nearest
+// first. A crossing is counted only between two neighbouring samples both in view, so the edge of a
+// ridge, where farther ground comes into view behind it, never reads as a height line.
 export function computePanorama(rings, obs, opts = {}) {
 	const o = { ...DEFAULTS, ...opts };
 	const t0 = now();
@@ -85,6 +96,8 @@ export function computePanorama(rings, obs, opts = {}) {
 	const crests = new Array(n);
 	const profile = o.profile ? new Int16Array(n * ns) : null;
 	const tProf = new Float64Array(ns), hProf = new Float32Array(ns);
+	const B = o.bands > 0 ? o.bands : 0, bandMax = o.bandKm * 1000;
+	const cStart = B ? new Uint32Array(n + 1) : null, cAlt = [], cD = [], cLv = [];
 	// The great-circle point (one atan2 and one log) is computed exactly only every ANCHOR-th sample;
 	// in between, Web Mercator (u, v) is interpolated linearly in distance. The ray is smooth in
 	// Mercator: over 8 steps (≤ 3.5 km even in the 545 m ring) the chord is < 0.3 m off the great
@@ -139,6 +152,7 @@ export function computePanorama(rings, obs, opts = {}) {
 		const list = [];
 		let M = -Infinity, Mq = PROF_NONE, vis = false, pend = -1, pendM = 0, minHidden = Infinity;
 		const po = a * ns;
+		if (B) cStart[a] = cAlt.length;
 		for (let i = 0; i < ns; i++) {
 			const t = tProf[i];
 			if (t >= M) {
@@ -147,6 +161,17 @@ export function computePanorama(rings, obs, opts = {}) {
 					if (d[i] >= d[pend] * o.gapRatio && d[i] - d[pend] >= o.gapMin && dip >= o.dipMin)
 						list.push({ d: d[pend], deg: Math.atan(pendM) * R2D, dip, sky: false, sea: hProf[pend] < 1 });
 					pend = -1;
+				}
+				// height lines crossed between this sample and the one before, both in view
+				if (B && vis && i > 0 && d[i] <= bandMax) {
+					const ha = hProf[i - 1], hb = hProf[i], la = Math.floor(ha / B), lb = Math.floor(hb / B);
+					if (la !== lb) {
+						const up = lb > la, ta = tProf[i - 1];
+						for (let L = up ? la + 1 : la; up ? L <= lb : L > lb; L += up ? 1 : -1) {
+							const f = (L * B - ha) / (hb - ha);
+							cAlt.push(Math.atan(ta + (t - ta) * f) * R2D); cD.push(d[i - 1] + (d[i] - d[i - 1]) * f); cLv.push(L);
+						}
+					}
 				}
 				vis = true;
 				if (t > M && profile) { const q = Math.round(Math.atan(t) * R2D * PROF_SCALE); Mq = q > 32767 ? 32767 : q; }
@@ -165,7 +190,53 @@ export function computePanorama(rings, obs, opts = {}) {
 		gapD[a] = gD; gap[a] = gT > M ? 1 : 0;
 		crests[a] = list;
 	}
-	return { n, step: o.step, alt, dist, sea, gap, gapD, crests, profile, d, ri, ns, h0, k: o.k, nearM: o.nearM, nearAllow: o.nearAllow, ms: now() - t0 };
+	let cross = null;
+	if (B) { cStart[n] = cAlt.length; cross = { start: cStart, alt: Float32Array.from(cAlt), d: Float32Array.from(cD), lv: Int16Array.from(cLv), bands: B }; }
+	return { n, step: o.step, alt, dist, sea, gap, gapD, crests, profile, cross, d, ri, ns, h0, k: o.k, nearM: o.nearM, nearAllow: o.nearAllow, ms: now() - t0 };
+}
+
+// Join the height-line crossings of neighbouring bearings into lines, as linkRidges joins crests: a
+// crossing carries on a line of the same height on the bearing before when the two are at nearly the
+// same angle and distance (greedy, one to one, best first). → { pts (az, alt pairs), starts (line i's
+// first point; length lines + 1), lv (each line's height in units of `bands`), bands }, or null. A
+// line ends at the 0°/360° seam rather than crossing it.
+export function linkContours(pano, { angTol = 1.5, distTol = 0.15, distAbs = 60, minPts = 3 } = {}) {
+	const c = pano.cross;
+	if (!c) return null;
+	const done = [];
+	let active = [];
+	for (let a = 0; a < pano.n; a++) {
+		const az = a * pano.step, j0 = c.start[a], j1 = c.start[a + 1], pairs = [];
+		for (let p = 0; p < active.length; p++) {
+			const l = active[p];
+			for (let j = j0; j < j1; j++) {
+				if (c.lv[j] !== l.lv) continue;
+				const dd = Math.abs(c.d[j] - l.d), da = Math.abs(c.alt[j] - l.alt), dTol = Math.max(distAbs, distTol * Math.max(c.d[j], l.d));
+				if (dd > dTol || da > angTol) continue;
+				pairs.push([dd / dTol + da / angTol, p, j]);
+			}
+		}
+		pairs.sort((x, y) => x[0] - y[0]);
+		const usedP = new Uint8Array(active.length), usedC = new Uint8Array(j1 - j0), next = [];
+		for (const [, p, j] of pairs) {
+			if (usedP[p] || usedC[j - j0]) continue;
+			usedP[p] = usedC[j - j0] = 1;
+			const l = active[p];
+			l.pts.push(az, c.alt[j]); l.d = c.d[j]; l.alt = c.alt[j];
+			next.push(l);
+		}
+		for (let p = 0; p < active.length; p++) if (!usedP[p]) done.push(active[p]);
+		for (let j = j0; j < j1; j++) if (!usedC[j - j0]) next.push({ lv: c.lv[j], d: c.d[j], alt: c.alt[j], pts: [az, c.alt[j]] });
+		active = next;
+	}
+	done.push(...active);
+	const lines = done.filter((l) => l.pts.length >= 2 * minPts);
+	let total = 0; for (const l of lines) total += l.pts.length;
+	const pts = new Float32Array(total), starts = new Uint32Array(lines.length + 1), lv = new Int16Array(lines.length);
+	let k = 0;
+	lines.forEach((l, i) => { starts[i] = k / 2; lv[i] = l.lv; pts.set(l.pts, k); k += l.pts.length; });
+	starts[lines.length] = total / 2;
+	return { pts, starts, lv, bands: c.bands };
 }
 
 // Link crests of neighbouring azimuths into ridge lines (greedy one-to-one by cost), then pack them
@@ -262,8 +333,9 @@ export function profileAt(pano, az, x, inclusive = false) {
 // interpolated linearly in distance between (under 0.3 m off the great circle): the trigonometry was
 // most of the cost, and the labels step re-marches several hundred targets near the coast.
 const MARCH_ANCHOR = 8;
-let marchBuf = new Float64Array(4096);
-export function marchBearing(rings, obs, az, x, { k = K_REFRACTION, nearM = DEFAULTS.nearM, nearAllow = DEFAULTS.nearAllow, dMin = DEFAULTS.dMin } = {}) {
+let marchBuf = new Float64Array(4096), marchH = new Float32Array(4096);
+// keep: also keep each sample's ground height (marchH, for ownSlope) and return the sample count n.
+export function marchBearing(rings, obs, az, x, { k = K_REFRACTION, nearM = DEFAULTS.nearM, nearAllow = DEFAULTS.nearAllow, dMin = DEFAULTS.dMin, keep = false } = {}) {
 	const phi1 = obs.lat * D2R, lam1 = obs.lon * D2R, sp1 = Math.sin(phi1), cp1 = Math.cos(phi1);
 	const th = az * D2R, ct = Math.cos(th), st = Math.sin(th);
 	// the sample distances (and each one's ring), as before
@@ -274,6 +346,7 @@ export function marchBearing(rings, obs, az, x, { k = K_REFRACTION, nearM = DEFA
 		marchBuf[n] = s;
 		s += Math.max(5, Math.min(s * 0.002, rings[r].mpp * 0.5));
 	}
+	if (keep && marchH.length < marchBuf.length) marchH = new Float32Array(marchBuf.length);
 	const point = (s) => {
 		const del = s / R_EARTH, sd = Math.sin(del), cdl = Math.cos(del);
 		const sp2 = sp1 * cdl + cp1 * sd * ct;
@@ -309,10 +382,65 @@ export function marchBearing(rings, obs, az, x, { k = K_REFRACTION, nearM = DEFA
 			h = sampleUV(rings, r, u, v, NaN);
 			if (h !== h) { h = 0; if (gapD === Infinity) gapD = s; } // ground that didn't load: 0 m, as the pano
 		}
+		if (keep) marchH[i] = h;
 		const t = (h - obs.h0 - nearAllow * Math.max(0, 1 - s / nearM)) / s - s * (1 - k) / (2 * R_EARTH);
 		if (t > M) { M = t; Md = s; }
 	}
-	return { blockAlt: M === -Infinity ? -90 : Math.atan(M) * R2D, blockDist: Md, gapD };
+	return { blockAlt: M === -Infinity ? -90 : Math.atan(M) * R2D, blockDist: Md, gapD, n };
+}
+
+// A hill whose top is hidden only by its own slope (SPEC §6.2 "brow"): from low down, the top of a
+// rounded hill sits just behind the brow of the slope you are looking up at, and the hill is very much
+// in view (Mount Cooee from the foot of Mount Tibrogargan, Adam 2026-11-22: 0.6–1.0° below its own
+// southern brow, 0.45 km out, so it went unnamed). On the exact bearing to the top (dist m away, hTop
+// m high): the blocker is the highest angle in front of `front` (as visibility's), and it is the hill's
+// own slope when it stands lower than the top, the ground from it to the top never drops more than
+// BROW_COL_M below it (no valley between: a separate ridge in front still hides the hill), and it is
+// within max(BROW_M, BROW_FRAC × dist) of the top (not the far end of a long spur). Null where ground
+// on the way didn't load.
+export const BROW_COL_M = 15, BROW_M = 600, BROW_FRAC = 0.2;
+export function ownSlope(rings, obs, az, front, dist, hTop, { k = K_REFRACTION, nearM = DEFAULTS.nearM, nearAllow = DEFAULTS.nearAllow } = {}) {
+	const m = marchBearing(rings, obs, az, dist, { k, nearM, nearAllow, keep: true });
+	if (m.gapD < dist) return null;
+	let M = -Infinity, iB = -1;
+	for (let i = 0; i < m.n && marchBuf[i] < front; i++) {
+		const s = marchBuf[i], t = (marchH[i] - obs.h0 - nearAllow * Math.max(0, 1 - s / nearM)) / s - s * (1 - k) / (2 * R_EARTH);
+		if (t > M) { M = t; iB = i; }
+	}
+	if (iB < 0) return null;
+	const hB = marchH[iB], dB = marchBuf[iB];
+	let low = Infinity;
+	for (let i = iB + 1; i < m.n; i++) if (marchH[i] < low) low = marchH[i];
+	const col = low === Infinity ? 0 : Math.max(0, hB - low);
+	return { brow: hB < hTop && col <= BROW_COL_M && dist - dB <= Math.max(BROW_M, BROW_FRAC * dist), blockAlt: Math.atan(M) * R2D, blockDist: dB, blockH: hB, col };
+}
+
+// The top of a hill as drawn: of the ground in view within radiusM of its summit (az, dist m away),
+// the point at the highest angle. On each ray that passes within radiusM, the running max up to where
+// the ray leaves that circle, if it was reached inside the circle (where, by binary search on the
+// monotone profile, as blockFromProfile). → { az, alt, d } or null. From the west, Mount
+// Tibrogargan's top (362 m, 0.74 km) is just behind the near rim of its summit (342 m, 0.6 km), which
+// is drawn as the top 9° to its right: the label goes there (Adam's 97° photo, 2026-11-22).
+export function topNear(pano, az, dist, radiusM) {
+	if (!pano.profile || !(dist > 0)) return null;
+	const P = pano.profile, W = Math.min(30, Math.asin(Math.min(1, radiusM / dist)) * R2D);
+	let best = null;
+	for (let k = Math.ceil((az - W) / pano.step), k1 = Math.floor((az + W) / pano.step); k <= k1; k++) {
+		const a = ((k % pano.n) + pano.n) % pano.n, del = (k * pano.step - az) * D2R;
+		const perp = dist * Math.sin(del), along = dist * Math.cos(del);
+		if (Math.abs(perp) >= radiusM || along <= 0) continue;
+		const i = lastBefore(pano.d, along + Math.sqrt(radiusM * radiusM - perp * perp));
+		if (i < 0) continue;
+		const o = a * pano.ns, q = P[o + i];
+		if (q === PROF_NONE) continue;
+		let lo = 0, hi = i;
+		while (lo < hi) { const m = (lo + hi) >> 1; if (P[o + m] >= q) hi = m; else lo = m + 1; }
+		const dd = pano.d[lo];
+		if (dd * dd + dist * dist - 2 * dd * dist * Math.cos(del) > radiusM * radiusM) continue;
+		const alt = q / PROF_SCALE;
+		if (!best || alt > best.alt) best = { az: a * pano.step, alt, d: dd };
+	}
+	return best;
 }
 
 // Is there ground that didn't load before distance x (m) on either ray beside bearing az?

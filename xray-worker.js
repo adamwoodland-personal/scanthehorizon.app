@@ -34,6 +34,9 @@
 //   airport (kind 'airport', from data/airports: SPEC §4.1) air, its size (1 major, 2 regional,
 //   3 airfield), and iata, its code where it has one. Airports in range are always sent: the page's
 //   Airports setting chooses which to name.
+//   A full pano also carries contours, the height lines (pano.js linkContours: pts as az, alt pairs, starts, lv
+//   the height in units of bands, bands = BAND_M), and labels carry brow: true for a hill in view whose top is
+//   just behind its own slope (targets.js).
 //   A 'full' pano can come twice: when the place names are late, the full drawing goes out without
 //   the summit lift first, and again with it just before the labels.
 //   A places error can be partial: {type:'error', code:'places', fatal:false, partial:true, missing,
@@ -52,7 +55,7 @@
 // (otherwise the later run would inherit the cancel and fail). A cancelled run's tile is kept only if
 // the plan now in use wants it, so stale work can't refill the store after a prune.
 import * as D from './dem.js';
-import { computePanorama, linkRidges } from './pano.js';
+import { computePanorama, linkRidges, linkContours, BAND_M, BAND_KM } from './pano.js';
 import { loadPlaces, placeTileUrls, snapPeaks, liftPeaks, summitNear, buildLabels } from './targets.js';
 import { canaryBlob, canaryOk, decodeBitmap, decodePNG, MainThreadDecoder } from './decode.js';
 import { SavedStore, areaTiles, planArea, awsChildren, summary, cleanBox, reachKm, contains, coarserDetail, DEFAULT_RADIUS, MAX_AREAS, MAX_RADIUS_KM } from './saved.js';
@@ -807,11 +810,12 @@ export class Engine {
 	computeFull(ms, t2, wall, T0) {
 		const { rings, rangeKm, src } = this.held;
 		const obs = this.observer(rings);
-		const pano = computePanorama(rings, obs, { step: 0.2, profile: true });
-		const ridges = linkRidges(pano);
+		const pano = computePanorama(rings, obs, { step: 0.2, profile: true, bands: BAND_M, bandKm: BAND_KM });
+		const ridges = linkRidges(pano), contours = linkContours(pano);
+		pano.cross = null;   // (the lines are all the page needs)
 		ms.full = now() - t2;
 		this.lastPano = pano; this.lastObs = obs;
-		this.postPano('full', pano, ridges, obs, rangeKm, src);
+		this.postPano('full', pano, ridges, obs, rangeKm, src, contours);
 		wall.full = now() - T0;
 		return { pano, obs };
 	}
@@ -823,12 +827,13 @@ export class Engine {
 		this.post({ type: 'labels', gen: this.gen, items });
 		wall.labels = now() - T0;
 	}
-	postPano(stage, pano, ridges, obs, rangeKm, source) {
+	postPano(stage, pano, ridges, obs, rangeKm, source, contours = null) {
 		const msg = { type: 'pano', gen: this.gen, stage, step: pano.step, n: pano.n, alt: pano.alt, dist: pano.dist, sea: pano.sea, gap: pano.gap,
-			ground: Math.round(obs.ground * 10) / 10, eye: Math.round(obs.h0 * 10) / 10, summit: obs.summit, rangeKm, ridges, source };
+			ground: Math.round(obs.ground * 10) / 10, eye: Math.round(obs.h0 * 10) / 10, summit: obs.summit, rangeKm, ridges, contours, source };
 		if (this.env.keepCopies) msg.alt = pano.alt.slice(), msg.dist = pano.dist.slice(), msg.sea = pano.sea.slice(), msg.gap = pano.gap.slice();
 		// (gapD stays here: the labels step reads it after this)
-		this.post(msg, this.env.keepCopies ? [] : [pano.alt.buffer, pano.dist.buffer, pano.sea.buffer, pano.gap.buffer, ridges.pts.buffer, ridges.starts.buffer, ridges.dip.buffer, ridges.len.buffer, ridges.med.buffer]);
+		this.post(msg, this.env.keepCopies ? [] : [pano.alt.buffer, pano.dist.buffer, pano.sea.buffer, pano.gap.buffer, ridges.pts.buffer, ridges.starts.buffer, ridges.dip.buffer, ridges.len.buffer, ridges.med.buffer,
+			...(contours ? [contours.pts.buffer, contours.starts.buffer, contours.lv.buffer] : [])]);
 	}
 	sourceOf(rings) {
 		const seen = new Set();

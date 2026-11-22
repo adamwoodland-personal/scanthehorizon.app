@@ -13,7 +13,7 @@
 // Airports (SPEC §4.1, build-airports.mjs) come from tiles of their own in the same format, with a
 // twelfth field, the IATA code: [−id, name, 0, lat×1e4, lon×1e4, AIRL|AIRM|AIRF, 0, ele, 0, wiki, cc, iata|0].
 import { haversine, finestAt, sampleAt, maxAround, ringForDistance, fetchWithDeadline, abortError, DEADLINES } from './dem.js';
-import { visibility, anchorAt } from './pano.js';
+import { visibility, anchorAt, blockFromProfile, ownSlope, topNear, BROW_M, BROW_FRAC } from './pano.js';
 
 const D2R = Math.PI / 180;
 export const MAX_ITEMS = 800;
@@ -389,6 +389,8 @@ export function candidates({ records, obs, rangeKm, rings, snaps = null, all = f
 	return { keep, inRange: cands.length };
 }
 
+// How far from a hill's summit its top as drawn may be (topNear): as far as a summit is snapped.
+export const TOP_M = SNAP_M;
 // ctx: { records, obs: {lat, lon, h0}, rangeKm, rings, pano (the full one, with its profile), snaps }.
 // → { items, stats }. At most MAX_ITEMS go out, at most HIDDEN_MAX of them hidden majors. If more
 // places are in view than fit, those the slider names at the lowest stops (for their kind or their
@@ -401,41 +403,63 @@ export function buildLabels({ records, obs, rangeKm, rings, pano, snaps = null, 
 		const major = c.major;
 		const v = visibility(rings, pano, obs, { lat: c.lat, lon: c.lon, h: c.h, kind: c.kind, dist: c.dist, major }, { slack });
 		if (v.exact) exact++;
-		if (v.status === 'hidden' && !major) continue;
+		// A hill whose top is hidden only by its own slope is in view, top just out of sight (brow).
+		// Only when its top is below the line over the brow (margin < 0): a top just above it, inside
+		// the uncertainty band, is "just in view" as before (several far peaks from the lookout).
+		// The profile's blocker (nearest ray) first: only one near the top is worth the exact march.
+		let brow = false;
+		if (isRelief(c.kind) && v.status !== 'visible' && v.margin < 0 && !v.unsure && !c.unsure) {
+			const reach = Math.max(BROW_M, BROW_FRAC * c.dist), front = c.dist - v.own;
+			const bd = v.blockDist != null ? v.blockDist : blockFromProfile(pano, v.az, front).blockDist;
+			if (c.dist - bd <= 1.5 * reach) {
+				const o = ownSlope(rings, obs, v.az, front, c.dist, c.h, { k: pano.k, nearM: pano.nearM, nearAllow: pano.nearAllow });
+				brow = !!(o && o.brow);
+			}
+		}
+		const status = brow ? 'visible' : v.status;
+		if (status === 'hidden' && !major) continue;
 		const standOut = v.margin;
 		let score = c.I + WL_WEIGHT * Math.log10(1 + c.wl) - distancePenalty(c.dKm);
-		if (isRelief(c.kind) && v.status !== 'hidden') score += Math.max(0, Math.min(3, standOut));
-		if (v.status === 'marginal') score -= 0.5;
+		if (isRelief(c.kind) && status !== 'hidden') score += Math.max(0, Math.min(3, standOut));
+		if (status === 'marginal') score -= 0.5;
 		// below the sea horizon itself: it couldn't be seen even with nothing in between
-		const overHorizon = v.status === 'hidden' && v.alt < -dip;
-		if (v.status === 'hidden') score -= arrowPenalty(c.dKm, overHorizon);
+		const overHorizon = status === 'hidden' && v.alt < -dip;
+		if (status === 'hidden') score -= arrowPenalty(c.dKm, overHorizon);
 		// The anchor: a visible or marginal peak sits on the drawn terrain at its bearing; anything
-		// else at its own angle.
-		let alt = v.alt;
-		if (isRelief(c.kind) && v.status !== 'hidden') {
+		// else at its own angle. One with its top out of sight sits on its top as drawn (topNear),
+		// which can be a nearer part of it than its summit. (Not one just in view: its top is in view
+		// as far as the data can tell, and on a long ridge the highest point drawn within 300 m could
+		// be 7° from it, as Perta Hill's from Alice Springs.)
+		let alt = v.alt, az = v.az;
+		if (isRelief(c.kind) && status !== 'hidden') {
 			const a = anchorAt(pano, v.az, c.dist + v.own);
 			if (a > -90) alt = a;
+			if (brow) {
+				const t = topNear(pano, v.az, c.dist, TOP_M);
+				if (t && t.alt > alt + 0.02) { az = t.az; alt = t.alt; }
+			}
 		}
 		// lat, lon: where it is (a peak's top as drawn when it was snapped), for the card's Go there.
 		const L = {
 			id: c.id, name: c.name, sub: c.sub, kind: c.kind, lat: round(c.lat, 5), lon: round(c.lon, 5),
-			az: round(v.az, 3), alt: round(alt, 3), dist: round(c.dKm, 3),
-			ele: c.ele, eleSrc: c.eleSrc, pop: c.pop, status: v.status, margin: round(v.margin, 3), standOut: round(standOut, 3),
-			score: round(score, 3), major, blockAlt: v.status === 'hidden' ? round(v.blockAlt, 3) : null,
-			blockDist: v.status === 'hidden' ? round(v.blockDist / 1000, 3) : null, wiki: c.wiki, cc: c.cc,
+			az: round(az, 3), alt: round(alt, 3), dist: round(c.dKm, 3),
+			ele: c.ele, eleSrc: c.eleSrc, pop: c.pop, status, margin: round(v.margin, 3), standOut: round(standOut, 3),
+			score: round(score, 3), major, blockAlt: status === 'hidden' ? round(v.blockAlt, 3) : null,
+			blockDist: status === 'hidden' ? round(v.blockDist / 1000, 3) : null, wiki: c.wiki, cc: c.cc,
 			wl: c.wl, approx: c.rounded || undefined,
 			overHorizon: overHorizon || undefined,
+			brow: brow || undefined,   // in view, its top just behind its own slope
 			// Part of the terrain didn't load: in front of it (it may be hidden; one hidden by what did
 			// load is hidden anyway), or under it (it may stand higher, so even hidden it may be in view).
-			unsure: (c.unsure || (v.unsure && v.status !== 'hidden')) || undefined,
+			unsure: (c.unsure || (v.unsure && status !== 'hidden')) || undefined,
 			air: c.air || undefined,   // an airport's size: 1 major, 2 regional, 3 airfield (AIR_SIZE)
 			iata: c.iata || undefined, // and its IATA code, where it has one (BNE)
 		};
 		items.push(L);
-		if (v.status !== 'hidden') {
+		if (status !== 'hidden') {
 			// the lowest stop that names it (marginal places come in at Normal or More, as allowed())
-			const s = Math.min(kindStop(c, { standOut, status: v.status }), scoreStop(score));
-			stop.set(L, v.status === 'marginal' ? Math.max(s, v.margin >= 0 ? 2 : 3) : s);
+			const s = Math.min(kindStop(c, { standOut, status }), scoreStop(score));
+			stop.set(L, status === 'marginal' ? Math.max(s, v.margin >= 0 ? 2 : 3) : s);
 		}
 	}
 	const hidden = items.filter((L) => L.status === 'hidden').sort((a, b) => b.score - a.score);

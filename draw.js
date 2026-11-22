@@ -4,7 +4,9 @@
 //  - the camera view, a true pinhole camera through the phone's attitude (attitude.js), at true
 //    scale, to line up with the live picture.
 // Both draw the skyline and the ridge lines the slider keeps; the sign view also fills the bands
-// between them in greys, darker near and lighter far, as aerial perspective does on the sign.
+// between them in greys, darker near and lighter far, as aerial perspective does on the sign. With the
+// setting on, thin dashed height lines (every 50 m) cross the ground in view nearby, under the ridge
+// lines, with the height written on every 100 m one.
 // Names sit above the drawing in ovals (DOM elements, so they can be tapped), each with a
 // vertical leader down to what it names; when no row above has room, a name hangs below the
 // skyline instead, in the ground, with its leader up to what it names. They are laid out in rows:
@@ -145,6 +147,134 @@ export function cameraProjection(g, q, vfov, view) {
 }
 
 // ---- The terrain ------------------------------------------------------------------------------------
+// Height lines (the setting "Height lines on hills nearby", on by default; Adam 2026-11-22): where the
+// ground in view within BAND_KM (3 km) crosses each multiple of 50 m (pano.js linkContours), thin, and a
+// little stronger at each 100 m, so the slopes in front read in steps of height, as on a map. Dashed
+// (Adam, the same day: solid lines looked like edges in the rock), the 100 m ones in longer dashes, and
+// those carry their height (drawContourLabels). Drawn before the ridge lines and the skyline, which go
+// over them. In the camera view white over the picture with a faint shadow under it, so it shows on pale
+// rock and dark trees alike; on the sign the ridge colour. (Lines, not filled bands: fills leave hard
+// vertical edges where the ground in view starts or stops, as the note on the detail slider says of
+// ridge fills.) Returns the 100 m lines as runs of screen points, [{ h, pts: [x, y, …] }], for the labels.
+export const CONTOUR_DASH = [[3, 3.5], [7, 3.5]];
+function drawContours(ctx, P, c, theme, sign) {
+	const runs = [];
+	if (!c.starts || c.starts.length < 2) return runs;
+	const pts = c.pts, paths = [new Path2D(), new Path2D()];
+	for (let j = 0; j + 1 < c.starts.length; j++) {
+		const h = c.lv[j] * c.bands, major = h % (2 * c.bands) === 0 ? 1 : 0, path = paths[major];
+		let open = false, prevAz = null, run = null;
+		for (let k = c.starts[j], e = c.starts[j + 1]; k < e; k++) {
+			const az = pts[2 * k], p = P.pt(az, pts[2 * k + 1]);
+			if (!p) { open = false; prevAz = az; continue; }
+			if (!open || (prevAz !== null && P.breaks(prevAz, az))) {
+				path.moveTo(p.x, p.y);
+				if (major) { run = { h, pts: [] }; runs.push(run); }
+			} else path.lineTo(p.x, p.y);
+			if (major) run.pts.push(p.x, p.y);
+			open = true; prevAz = az;
+		}
+	}
+	ctx.save();
+	ctx.lineJoin = 'round'; ctx.lineCap = 'butt';
+	paths.forEach((path, major) => {
+		ctx.setLineDash(CONTOUR_DASH[major]);
+		if (!sign) {
+			ctx.strokeStyle = `rgba(0,0,0,${major ? 0.26 : 0.18})`; ctx.lineWidth = major ? 2.8 : 2.2;
+			ctx.stroke(path);
+			ctx.strokeStyle = `rgba(255,255,255,${major ? 0.75 : 0.55})`; ctx.lineWidth = major ? 1.4 : 1;
+		} else {
+			ctx.strokeStyle = rgb(theme.ridge, (major ? 0.5 : 0.32) * (theme.dark ? 0.8 : 1)); ctx.lineWidth = major ? 1.1 : 0.8;
+		}
+		ctx.stroke(path);
+	});
+	ctx.restore();
+	return runs;
+}
+
+// The heights on the 100 m lines ("300 m"), so a phone needn't count lines up from the bottom (Adam,
+// 2026-11-22). Each line long enough on screen (CONTOUR_LABEL_MIN px inside the drawing) gets one,
+// upright, on the line: at the middle of the part on screen, else further and further to either side, where it
+// clears the place names (their ovals and leaders, `avoid`: the layout's placed labels), the heights
+// already placed, the sky (skyTop: the skyline drawn) and the drawing's edges; longest lines first, and
+// not within CONTOUR_SAME px of the same height already written. In a halo of the camera's shadow or
+// the sign's board, which also clears the dashes under it. → the labels placed, [{ text, x, y, l, t, r, b }].
+export const CONTOUR_LABEL_MIN = 50, CONTOUR_SAME = 160, CONTOUR_JOIN = 8;
+// where along the part on screen to try, middle first, then outwards: a line just under a summit has
+// room for its height only where the skyline leaves it (the 300 m line on Tibrogargan from the west)
+const CONTOUR_SPOTS = [0.5]; for (let d = 0.05; d < 0.5; d += 0.05) CONTOUR_SPOTS.push(0.5 - d, 0.5 + d);
+export function drawContourLabels(ctx, runs, theme, g, skyTop, avoid, sign) {
+	const out = [];
+	if (!runs || !runs.length) return out;
+	const L = g.left + 4, R = g.right - 4, T = g.top + 8, B = g.bottom - 6;
+	const inside = (x, y) => x >= L && x <= R && y >= T && y <= B;
+	ctx.save();
+	ctx.font = `600 11px ${FONT}`;
+	const boxes = [];
+	for (const p of avoid || []) {
+		boxes.push({ l: p.l - 4, r: p.r + 4, t: p.t - 3, b: p.b + 3 });
+		const x = p.ax, y0 = p.hang ? p.ay : p.b, y1 = p.hang ? p.t : p.ay;
+		boxes.push({ l: x - 3, r: x + 3, t: Math.min(y0, y1), b: Math.max(y0, y1) + 3 });
+	}
+	const hits = (q) => boxes.some((o) => q.l < o.r && q.r > o.l && q.t < o.b && q.b > o.t);
+	const sky = (x) => { const i = Math.round(x); return i >= 0 && i < skyTop.length ? skyTop[i] : -Infinity; };
+	// Pieces of one height that meet on screen are one line here: the worker's lines break where a line
+	// jumps in distance, as round a summit (Tibrogargan's 300 m line on a phone was 59 + 59 + 7 + 5 px).
+	const joined = [], used = new Set(), sorted = runs.slice().sort((a, b) => a.pts[0] - b.pts[0]);
+	for (const r of sorted) {
+		if (used.has(r)) continue;
+		used.add(r);
+		const pts = r.pts.slice();
+		for (let more = true; more;) {
+			more = false;
+			const ex = pts[pts.length - 2], ey = pts[pts.length - 1];
+			for (const q of sorted) {
+				if (used.has(q) || q.h !== r.h || Math.hypot(q.pts[0] - ex, q.pts[1] - ey) > CONTOUR_JOIN) continue;
+				used.add(q); for (let i = 0; i < q.pts.length; i++) pts.push(q.pts[i]); more = true; break;
+			}
+		}
+		joined.push({ h: r.h, pts });
+	}
+	const cands = [];
+	for (const run of joined) {
+		// the part on screen: arc length along the run, counting only segments inside the drawing
+		const P = run.pts, acc = [0];
+		let len = 0;
+		for (let i = 2; i < P.length; i += 2) {
+			if (inside(P[i - 2], P[i - 1]) && inside(P[i], P[i + 1])) len += Math.hypot(P[i] - P[i - 2], P[i + 1] - P[i - 1]);
+			acc.push(len);
+		}
+		if (len >= CONTOUR_LABEL_MIN) cands.push({ run, acc, len });
+	}
+	cands.sort((a, b) => b.len - a.len);
+	for (const { run, acc, len } of cands) {
+		const text = `${run.h} m`, w = ctx.measureText(text).width, P = run.pts;
+		for (const f of CONTOUR_SPOTS) {
+			const want = f * len;
+			let k = 1;
+			while (k < acc.length - 1 && acc[k] < want) k++;
+			const s = acc[k] > acc[k - 1] ? (want - acc[k - 1]) / (acc[k] - acc[k - 1]) : 0;
+			const x = P[2 * k - 2] + (P[2 * k] - P[2 * k - 2]) * s, y = P[2 * k - 1] + (P[2 * k + 1] - P[2 * k - 1]) * s;
+			const q = { l: x - w / 2 - 3, r: x + w / 2 + 3, t: y - 7, b: y + 7 };
+			if (!inside(q.l, q.t) || !inside(q.r, q.b) || hits(q)) continue;
+			if (sky(x) > q.t - 2 || sky(q.l) > q.t + 4 || sky(q.r) > q.t + 4) continue;   // (its corners may just touch the skyline)
+			if (out.some((o) => o.text === text && Math.hypot(o.x - x, o.y - y) < CONTOUR_SAME)) break;
+			boxes.push({ l: q.l - 6, r: q.r + 6, t: q.t - 3, b: q.b + 3 });
+			out.push({ text, x, y, ...q });
+			break;
+		}
+	}
+	ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+	for (const o of out) {
+		ctx.strokeStyle = sign ? theme.panel : 'rgba(0,0,0,0.6)'; ctx.lineWidth = sign ? 5 : 3.5;
+		ctx.strokeText(o.text, o.x, o.y + 0.5);
+		ctx.fillStyle = sign ? theme.muted : 'rgba(255,255,255,0.95)';
+		ctx.fillText(o.text, o.x, o.y + 0.5);
+	}
+	ctx.restore();
+	return out;
+}
+
 // Which skyline samples are the sea horizon or flat ground (1), or cut off by the end of the range
 // (2): drawn faint and dashed. The engine says so in pano.sea; failing that, the sea horizon is
 // guessed: it sits at the dip angle for the eye's height above the sea, at the matching distance.
@@ -177,8 +307,9 @@ function skyMask(pano) {
 // vertical edges wherever a ridge line starts or stops. The soft strokes below replaced them.)
 
 // Draw the panorama. Returns skyTop: for each CSS px column, the highest (smallest y) terrain point
-// drawn there, so the labels can keep to the sky.
-export function drawTerrain(ctx, P, pano, ridgeParams, theme, g) {
+// drawn there, so the labels can keep to the sky. opts.contours: draw the height lines (and leave the
+// 100 m ones in opts.contourRuns for drawContourLabels, once the names are laid out).
+export function drawTerrain(ctx, P, pano, ridgeParams, theme, g, opts = {}) {
 	const W = Math.ceil(g.W), skyTop = new Float32Array(W).fill(Infinity);
 	if (!pano) return skyTop;
 	const sign = P.kind === 'sign', bottom = g.bottom, range = pano.rangeKm || 150, n = pano.n, step = pano.step;
@@ -236,6 +367,8 @@ export function drawTerrain(ctx, P, pano, ridgeParams, theme, g) {
 			}
 		}
 	}
+
+	opts.contourRuns = opts.contours && pano.contours ? drawContours(ctx, P, pano.contours, theme, sign) : null;
 
 	// The ridge lines the slider keeps, far to near; darker and heavier near. In the sign view a
 	// ridge must also run at least 40 px across the screen or stand clearly (0.5°) in front of what's

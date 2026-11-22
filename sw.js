@@ -17,7 +17,7 @@
 //    The place search needs a connection anyway.
 //  - On activate, only this site's older caches (names starting 'sth-') are deleted.
 //  - Bump CACHE on every deploy that changes a precached file.
-const CACHE = 'sth-v16';
+const CACHE = 'sth-v17';
 const PLACES = 'sth-places-v1';
 // (300 place tiles until the airports came, sth-v13: a view reads one to four airport tiles beside its
 // place tiles, so this keeps as many views' names as before)

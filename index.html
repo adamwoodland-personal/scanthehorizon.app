@@ -127,7 +127,7 @@
    "name": "Why isn't a hill I can see named, and what about trees and buildings?",
    "acceptedAnswer": {
     "@type": "Answer",
-    "text": "Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown."
+    "text": "Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. From the foot of a hill its very top is often just behind the slope in front of you; the hill is still named, with its top out of sight. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown."
    }
   },
   {
@@ -359,6 +359,8 @@
 		<p class="small">Up a tower or a few floors up, more of the view clears the ground nearby.</p>
 		<label class="check"><input id="setSummit" type="checkbox" checked> Stand on top of a summit within 150 m</label>
 		<p class="small">Elevation data can round a mountain’s top off or put it a little to one side. With this on, a place near a named summit is looked at from the summit’s top. Turn it off if you’re on the slope below it.</p>
+		<label class="check"><input id="setBands" type="checkbox" checked> Height lines on hills nearby</label>
+		<p class="small">Thin dashed lines across the ground in view within 3 km, one for every 50 m of height, with the height written on every 100 m line, so you can see how high the slopes in front of you rise.</p>
 		<fieldset class="seg">
 			<legend>Height of the hills in the sign view</legend>
 			<label><input type="radio" name="exag" value="1"> True (×1)</label>
@@ -417,7 +419,7 @@
 			<h4>How far away is the horizon?</h4>
 			<p>Standing at the water's edge, with your eyes about 1.7 m up, the sea horizon is about 5.0 km away. From 100 m up it is about 38 km, and from 1,000 m about 121 km. The guide <a href="/how-far-can-you-see/">How far can you see?</a> works it out for any height, and whether a far-off mountain clears the curve.</p>
 			<h4>Why isn't a hill I can see named, and what about trees and buildings?</h4>
-			<p>Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown.</p>
+			<p>Names come from GeoNames, an open database of places, and airports from OurAirports. A hill that isn't in it isn't named, and a small one may only be named with the Detail slider turned up; the List shows every name the slider allows, and Settings chooses which airports to name, by size. From the foot of a hill its very top is often just behind the slope in front of you; the hill is still named, with its top out of sight. The elevation data is the shape of the land rather than what stands on it (bare ground where there are detailed national surveys, as in Australia and Switzerland), so the view is drawn as if trees and buildings were glass: a town hidden from you only by buildings or a forest is still shown.</p>
 			<h4>Does it work indoors, or without a compass?</h4>
 			<p>Yes. The drawing is made from data, not from the camera, so it works indoors and at night. With a compass the drawing turns as you turn; steel and electronics indoors can throw a compass off, so drag the drawing to line it up. Without a compass, on a computer for example, drag to look around and scroll or pinch to zoom.</p>
 			<h4>How accurate is it?</h4>

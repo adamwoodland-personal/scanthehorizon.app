@@ -24,7 +24,7 @@ import { parseSaveLink, covers, boxSize, cleanName, MAX_RADIUS_KM, MAX_SIDE_KM }
 import { attitude, fromAttitude, wrap180, wrap360, autoCamFov, screenFov, qRot, DEG } from './attitude.js';
 import {
 	readTheme, detailParams, allowed, stopName, signProjection, cameraProjection, drawTerrain, drawTicks,
-	layoutLabels, drawLeaders, labelWidth, point, AIR_STOPS,
+	layoutLabels, drawLeaders, drawContourLabels, labelWidth, point, AIR_STOPS,
 } from './draw.js';
 
 const $ = (id) => document.getElementById(id);
@@ -46,6 +46,9 @@ const kindWord = (L) => (L.kind === 'airport' && AIR_KIND[L.air]) || KIND[L.kind
 // The Airports setting, as screen readers say it (the slider shows AIR_STOPS).
 const AIR_SAY = ['No airports', 'Major airports only', 'Major and regional airports', 'All airports and airfields'];
 const STATUS = { visible: 'in view', marginal: 'just in view', hidden: 'behind the hills' };
+// A hill in view whose very top is just behind its own slope (the worker's brow: from its foot, the
+// slope in front hides the top).
+const BROW_WORDS = 'top out of sight';
 // The example on the start screen: the Glass House Mountains Lookout (OSM node 310543512), whose
 // sign this page copies.
 const DEMO = { name: 'Glass House Mountains Lookout', lat: -26.93153, lon: 152.89505, source: 'demo', az: 67 };
@@ -63,7 +66,7 @@ const PREFS = 'xray-prefs-v2', OLD_PREFS = 'xray-prefs-v1';
 const AGLS = [0, 3, 6, 10, 20, 50, 100, 300], EXAGS = [1, 2, 3, 4], EXAG = 3;
 const SAVE_KMS = [2, 5, 10, 20, 50, 100, 200];
 const AIR = 1;   // the Airports setting's default: major airports only
-const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, air: AIR, airSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, detail: 50, camLong: null, place: null, saveKm: 5, diag: false };
+const DEFAULTS = { agl: 0, floor: null, exag: EXAG, exagSet: false, air: AIR, airSet: false, range: 'auto', theme: 'auto', lite: false, summit: true, bands: true, detail: 50, camLong: null, place: null, saveKm: 5, diag: false };
 const readStored = (key) => { try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { return null; } };
 function loadPrefs() {
 	const p = { ...DEFAULTS };
@@ -79,6 +82,7 @@ function loadPrefs() {
 	if (['auto', 'light', 'dark'].includes(raw.theme)) p.theme = raw.theme;
 	if (typeof raw.lite === 'boolean') p.lite = raw.lite;
 	if (typeof raw.summit === 'boolean') p.summit = raw.summit;
+	if (typeof raw.bands === 'boolean') p.bands = raw.bands;
 	if (typeof raw.diag === 'boolean') p.diag = raw.diag;
 	if (Number.isInteger(raw.detail) && raw.detail >= 0 && raw.detail <= 100) p.detail = raw.detail;
 	if (!old && typeof raw.camLong === 'number' && raw.camLong >= 20 && raw.camLong <= 120) p.camLong = raw.camLong;
@@ -124,7 +128,7 @@ function placeFromLink(hash = location.hash) {
 
 // ---- State ---------------------------------------------------------------------------------------------
 const S = {
-	place: null, decl: 0,
+	place: null, runAt: null, decl: 0,   // runAt: where the view in use was worked out from
 	view: 'sign',               // 'sign' | 'camera'
 	aim: 'drag',                // 'drag' until the compass gives readings, then 'compass'
 	az: 0, alt: 0,              // the dragged view: bearing, and (camera view) altitude
@@ -207,6 +211,7 @@ function startRun() {
 	gapUi();
 	const conn = navigator.connection;
 	const lite = prefs.lite || !!(conn && conn.saveData);
+	S.runAt = { lat: S.place.lat, lon: S.place.lon };
 	worker.postMessage({ type: 'run', gen, lat: S.place.lat, lon: S.place.lon, agl: aglMetres(), rangeKm: prefs.range, lite, source: S.source || 'auto', facing: wrap360(S.look.az), summit: prefs.summit });
 	S.dirty = true;
 	progressUi(); cardUi();
@@ -261,7 +266,7 @@ function onWorker(m) {
 		// A nearby GPS fix being worked out again: keep the full panorama until the new full one
 		// comes, rather than swap in the new run's rough first one for a moment.
 		if (m.stage === 'coarse' && S.pano && S.pano.stage === 'full' && S.pano.place && km(S.pano.place.lat, S.pano.place.lon, S.place.lat, S.place.lon) < 2) break;
-		m.place = { lat: S.place.lat, lon: S.place.lon };
+		m.place = S.runAt || { lat: S.place.lat, lon: S.place.lon };   // where it was worked out from
 		S.pano = m;
 		gapUi();
 		if (m.stage === 'full' && S.terrainToast) { S.terrainToast = false; if (!gapDeg()) toast('Part of the terrain didn’t load: the drawing may have gaps'); }
@@ -752,6 +757,7 @@ let locGen = 0, watchId = null, watchTimer = 0, gpsWanted = false;
 // they finish; the latest fix waits meanwhile. A move keeps the way the view looks and what is
 // selected. (The test hook can shorten FOLLOW.)
 let FOLLOW = 10000, followAt = 0, followTimer = 0, pendingFix = null;
+const FOLLOW_M = 50, FOLLOW_MIN_M = 10, FOLLOW_FRAC = 0.05;   // followStep()
 const IOS_APP = (/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
 	&& (navigator.standalone === true || matchMedia('(display-mode: standalone)').matches);
 function stopGps() {
@@ -776,18 +782,19 @@ function startGps() {
 		if (!S.place) openSheet($('placeSheet'));
 	}, 60000);
 }
-// A fix. When it is somewhere else, further away than the two fixes' uncertainties together and
-// over 50 m (so a fix wandering about indoors at ±60 m doesn't redo the view every few seconds),
-// you have moved, and the view follows (followFix). A more accurate fix is always taken, position
-// and accuracy together (never the accuracy alone, which showed ±5 m beside a position from a ±25 m
-// fix 40 m away), at once: the view is worked out again when it moved the position by more than
-// 15 m and twice its own accuracy. A less accurate fix near the one in use is ignored, and so is a
-// move it undoes.
+// A fix. When it is somewhere else, further away than the two fixes' uncertainties together and over
+// 50 m (so a fix wandering about indoors at ±60 m doesn't redo the view every few seconds), you have
+// moved, and the view follows (followFix). A more accurate fix is always taken, position and accuracy
+// together (never the accuracy alone, which showed ±5 m beside a position from a ±25 m fix 40 m away),
+// at once: the view is worked out again when it moved the position by more than 15 m and twice its own
+// accuracy. A less accurate fix near the one in use is ignored, and so is a move it undoes. With ground
+// close by, the 50 m and 15 m are followStep(), down to 10 m: a smaller move then follows too.
+// Distances are from where the view in use was worked out (S.runAt), not from the place shown, which a
+// more accurate fix can move a little at a time without a new view (so it could creep away from it).
 function onFix(pos, gen) {
 	if (gen !== locGen) return;
 	const { latitude: lat, longitude: lon } = pos.coords, acc = Math.max(1, pos.coords.accuracy || 999);
 	const cur = S.place && S.place.source === 'gps' ? S.place : null;
-	const moved = cur ? km(cur.lat, cur.lon, lat, lon) * 1000 : Infinity;
 	const fix = { name: 'Your location', lat, lon, acc, source: 'gps' };
 	if (!cur) {
 		followAt = performance.now();
@@ -795,12 +802,31 @@ function onFix(pos, gen) {
 		approxToast(acc, null);
 		return;
 	}
-	if (moved > Math.max(50, acc + cur.acc)) { followFix(fix); return; }
+	const from = S.runAt || cur, step = followStep(), away = km(from.lat, from.lon, lat, lon) * 1000;
+	if (away > Math.max(FOLLOW_M, acc + cur.acc)) { followFix(fix); return; }
+	if (acc < cur.acc && away > Math.max(Math.min(15, step), 2 * acc)) { pendingFix = null; setPlace(fix, true); return; }
+	if (away > Math.max(step, acc + cur.acc)) { followFix(fix); return; }
 	pendingFix = null;
-	if (acc < cur.acc) {
-		if (moved > Math.max(15, 2 * acc)) setPlace(fix, true);
-		else { cur.lat = lat; cur.lon = lon; cur.acc = acc; placeUi(); }
-	}
+	if (acc < cur.acc) { cur.lat = lat; cur.lon = lon; cur.acc = acc; placeUi(); }
+}
+// How far you can move before the view is worked out again: 50 m, but 5% of the distance to the
+// nearest skyline when that is less (never under 10 m), as a step moves near ground across the
+// picture most: walking up to the foot of Mount Tibrogargan, the view stayed 51 m behind and the cliff
+// 0.2 km away was drawn 6° below the rock (Adam's screenshots, 2026-11-22). Each such view is worked
+// out on the terrain already held, without downloading. Such a short move also waits less than
+// FOLLOW for its turn (followWait): walking at 1.4 m/s, ten seconds is 14 m.
+function followStep(P = S.pano) {
+	if (!P || P.stage !== 'full' || !P.dist) return FOLLOW_M;
+	let near = Infinity;
+	for (let i = 0; i < P.dist.length; i++) if (P.dist[i] > 0 && P.dist[i] < near) near = P.dist[i];
+	return Math.max(FOLLOW_MIN_M, Math.min(FOLLOW_M, FOLLOW_FRAC * near * 1000));
+}
+// The wait before a move is worked out: FOLLOW (10 s, for a car), or less for a move of under 50 m
+// (one only ground close by asks for), in proportion to followStep: 2 s at 10 m.
+function followWait(f) {
+	const from = S.runAt || S.place;
+	if (!f || !from || km(from.lat, from.lon, f.lat, f.lon) * 1000 > FOLLOW_M) return FOLLOW;
+	return FOLLOW * Math.min(1, followStep() / FOLLOW_M);
 }
 function approxToast(acc, was) {
 	if (acc > 100 && (!was || was.acc <= 100)) toast(`Position approximate (±${nf(acc)} m): search for your address for a truer view`, 6000);
@@ -811,7 +837,7 @@ function tryFollow() {
 	if (!pendingFix) return;
 	if (!S.place || S.place.source !== 'gps') { pendingFix = null; return; }
 	if (!S.ready && !S.terrainErr && !S.stalled) return;   // the view still being worked out: its ready calls back
-	const wait = followAt + FOLLOW - performance.now();
+	const wait = followAt + followWait(pendingFix) - performance.now();
 	if (wait > 0) { followTimer = setTimeout(tryFollow, wait); return; }
 	const f = pendingFix, was = S.place;
 	pendingFix = null; followAt = performance.now();
@@ -1059,6 +1085,7 @@ function settingsUi() {
 	$('setRange').value = String(prefs.range);
 	$('setLite').checked = prefs.lite;
 	$('setSummit').checked = prefs.summit;
+	$('setBands').checked = prefs.bands;
 	$('setDiag').checked = prefs.diag;
 	airUi();
 }
@@ -1081,6 +1108,7 @@ function setSetting(k, v) {
 	else if (k === 'theme' && ['auto', 'light', 'dark'].includes(v)) { prefs.theme = v; applyTheme(); }
 	else if (k === 'lite') { prefs.lite = !!v; startRun(); }
 	else if (k === 'summit') { prefs.summit = !!v; changeEye(); }
+	else if (k === 'bands') prefs.bands = !!v;   // (drawn or not: the lines come with every view)
 	else if (k === 'diag') { prefs.diag = !!v; diagUi(); }
 	else if (k === 'air' && Number.isInteger(+v) && +v >= 0 && +v < AIR_STOPS.length) {
 		if (+v === prefs.air && prefs.airSet) return;
@@ -1101,6 +1129,7 @@ for (const r of document.querySelectorAll('input[name="theme"]')) r.addEventList
 $('setRange').addEventListener('change', (e) => setSetting('range', e.target.value === 'auto' ? 'auto' : +e.target.value));
 $('setLite').addEventListener('change', (e) => setSetting('lite', e.target.checked));
 $('setSummit').addEventListener('change', (e) => setSetting('summit', e.target.checked));
+$('setBands').addEventListener('change', (e) => setSetting('bands', e.target.checked));
 $('setDiag').addEventListener('change', (e) => setSetting('diag', e.target.checked));
 $('setAir').addEventListener('input', (e) => setSetting('air', Math.round(+e.target.value)));
 
@@ -1475,7 +1504,7 @@ function behindWords(L) {
 }
 // How a place stands: in view, just in view, behind the hills (or over the horizon), or "may be
 // hidden" where terrain in front of it or under it didn't load (the worker's unsure).
-const statusWords = (L) => (L.status === 'hidden' ? behindWords(L) : L.unsure ? 'may be hidden' : STATUS[L.status] || '');
+const statusWords = (L) => (L.status === 'hidden' ? behindWords(L) : L.unsure ? 'may be hidden' : L.brow ? BROW_WORDS : STATUS[L.status] || '');
 // The card for one place. off: how far it is from the centre (degrees, + to the right) when it's
 // named as the nearest one drawn rather than the one ahead; it then leads the kicker.
 function cardFor(L, off = null, hold = 1000) {
@@ -1648,7 +1677,8 @@ function draw() {
 	const params = detailParams(S.detail, G.w, zoomRelax(), prefs.air);
 	ctx.save();
 	ctx.beginPath(); ctx.rect(0, G.top, G.W, G.bottom - G.top); ctx.clip();
-	const skyTop = drawTerrain(ctx, P, S.pano, params, theme, G);
+	const terrainOpts = { contours: prefs.bands };
+	const skyTop = drawTerrain(ctx, P, S.pano, params, theme, G, terrainOpts);
 	// Candidates: up to three big hidden places as behind-arrows (whatever the slider says), the
 	// tapped one, then everything the slider allows, by score.
 	const cands = [];
@@ -1694,6 +1724,8 @@ function draw() {
 		S.more = Math.max(0, n - placed.filter((p) => !p.behind).length);
 	}
 	S.cands = cands; // (for the test hook)
+	// the heights on the 100 m height lines, clear of the names just laid out
+	S.contourLabels = drawContourLabels(ctx, terrainOpts.contourRuns, theme, G, skyTop, placed, P.kind === 'sign');
 	drawLeaders(ctx, placed, theme);
 	ctx.restore();
 	drawTicks(ctx, P, G, theme, S.look.az);
@@ -1786,9 +1818,13 @@ window.__XRAY = {
 	setWidth,
 	labels() {
 		return S.placed.map((p) => ({ name: p.L.name, text: p.text + (p.ht ? ' ' + p.ht : ''), id: p.L.id, x: p.ax, y: p.ay, box: { l: p.l, t: p.t, r: p.r, b: p.b }, row: p.row,
-			status: p.L.status, kind: p.L.kind, major: !!p.L.major, behind: !!p.behind, dashed: !!p.dashed, hang: !!p.hang, az: p.L.az, unsure: !!p.L.unsure }));
+			status: p.L.status, kind: p.L.kind, major: !!p.L.major, behind: !!p.behind, dashed: !!p.dashed, hang: !!p.hang, az: p.L.az, unsure: !!p.L.unsure, brow: !!p.L.brow }));
 	},
 	pano() { return S.pano; },
+	// the heights written on the height lines in the last frame: [{ text, x, y, l, t, r, b }]
+	contourLabels() { return (S.contourLabels || []).map((o) => ({ ...o })); },
+	// where the view in use was worked out, and how far a fix must be from it for a new one (m)
+	get follow() { return { runAt: S.runAt ? { ...S.runAt } : null, step: followStep(), shortWait: FOLLOW * Math.min(1, followStep() / FOLLOW_M), pending: !!pendingFix }; },
 	stats() { return S.stats; },
 	// the projection of the last frame drawn: the sign view's x = cx + (az − centreAz)·ppd, y = hy − alt·ppd·exag
 	proj() { return S.lastP; },
